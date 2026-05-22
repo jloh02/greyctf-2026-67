@@ -1,0 +1,23 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      NODE_ENV: production
+      SPACE_67_KEYBOARD: "true"
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "4173:80"
+    restart: unless-stopped
