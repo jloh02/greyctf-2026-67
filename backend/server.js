@@ -15,6 +15,9 @@ const PIPE_SPEED = 255;
 const PIPE_WIDTH = 74;
 const PIPE_GAP = 168;
 const PIPE_INTERVAL = 1.42;
+const PIPE_SPAWN_X = GAME_WIDTH + 80;
+const INITIAL_PIPE_X = GAME_WIDTH + 260;
+const PIPE_SPACING = PIPE_SPEED * PIPE_INTERVAL;
 const FLOOR_Y = GAME_HEIGHT - 48;
 const TICK_SECONDS = 1 / 60;
 const STATE_SEND_MS = 1000 / 30;
@@ -254,11 +257,20 @@ class GameSession {
 
   seedPipes() {
     for (let i = 0; i < 4; i += 1) {
-      this.spawnPipe(GAME_WIDTH + 260 + i * 270);
+      this.spawnPipe(INITIAL_PIPE_X + i * PIPE_SPACING);
     }
   }
 
-  spawnPipe(x = GAME_WIDTH + 80) {
+  canSpawnPipe() {
+    if (this.pipes.length === 0) {
+      return true;
+    }
+
+    const rightmostPipeX = this.pipes.reduce((rightmostX, pipe) => Math.max(rightmostX, pipe.x), -Infinity);
+    return rightmostPipeX <= PIPE_SPAWN_X - PIPE_SPACING;
+  }
+
+  spawnPipe(x = PIPE_SPAWN_X) {
     const wave = Math.sin((this.elapsed + this.nextPipeId) * 1.37);
     const jitter = Math.sin(this.elapsed * 2.9 + this.nextPipeId * 6.1) * 58;
     const gapY = clamp(190 + wave * 88 + jitter, 128, FLOOR_Y - PIPE_GAP - 44);
@@ -343,7 +355,7 @@ class GameSession {
     this.birdY += this.velocity * dt;
     this.spawnTimer += dt;
 
-    if (this.spawnTimer >= PIPE_INTERVAL) {
+    if (this.spawnTimer >= PIPE_INTERVAL && this.canSpawnPipe()) {
       this.spawnTimer = 0;
       this.spawnPipe();
     }

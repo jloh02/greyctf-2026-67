@@ -168,7 +168,6 @@ class GestureInterpreter {
 const gestures = new GestureInterpreter(sendFlap);
 
 connect();
-startCamera();
 requestAnimationFrame(draw);
 
 function connect() {
@@ -191,11 +190,14 @@ function connect() {
       config = message.config || config;
       canvas.width = constants.width;
       canvas.height = constants.height;
+      applyInputMode();
       if (!cameraStarting) {
-        if (mediaPipeReady) {
+        if (config.space67Keyboard) {
+          statusText.textContent = "Server connected. Keyboard mode active.";
+        } else if (mediaPipeReady) {
           statusText.textContent = "Camera tracking active.";
         } else {
-          statusText.textContent = config.space67Keyboard ? "Server connected. Space sends 67." : "Server connected.";
+          statusText.textContent = "Starting camera tracking.";
         }
       }
       return;
@@ -240,19 +242,53 @@ function sendFlap(source) {
   socket.send(JSON.stringify({ type: "flap", source, clientTime: Date.now() }));
   sentFlaps += 1;
   flapPulseText.textContent = `${sentFlaps} sent`;
-  mode = source === "gesture" && config.space67Keyboard ? "Keyboard 67" : mediaPipeReady ? "Tracking" : "Online";
+  mode = config.space67Keyboard ? "Keyboard" : mediaPipeReady ? "Tracking" : "Online";
 }
 
 function sendManualFlap() {
-  if (!manualInputEnabled()) {
-    statusText.textContent = "Manual input is disabled while camera tracking is active.";
+  if (!keyboardModeEnabled()) {
+    statusText.textContent = "Manual input is disabled in camera mode.";
     return;
   }
-  sendFlap("manual");
+  statusText.textContent = "Use Space in keyboard mode.";
 }
 
-function manualInputEnabled() {
-  return !mediaPipeReady && !cameraStarting;
+function keyboardModeEnabled() {
+  return config.space67Keyboard;
+}
+
+function cameraModeEnabled() {
+  return !config.space67Keyboard;
+}
+
+function applyInputMode() {
+  cameraButton.disabled = keyboardModeEnabled();
+  flapButton.disabled = true;
+
+  if (keyboardModeEnabled()) {
+    stopCameraTracking();
+    mode = connected ? "Keyboard" : "Offline";
+    return;
+  }
+
+  if (!mediaPipeReady && !cameraStarting) {
+    startCamera();
+  }
+}
+
+function stopCameraTracking() {
+  if (video.srcObject) {
+    for (const track of video.srcObject.getTracks()) {
+      track.stop();
+    }
+    video.srcObject = null;
+  }
+  mediaPipeReady = false;
+  cameraStarting = false;
+  lastVideoTime = -1;
+  leftMeter.value = 0.5;
+  rightMeter.value = 0.5;
+  gestureStateText.textContent = "NEUTRAL";
 }
 
 function restartRun() {
@@ -369,17 +405,20 @@ function drawPipe(x, y, height, inverted) {
 
   if (atlas.complete && atlas.naturalWidth > 0) {
     const sprites = spriteSource();
-    for (let segmentY = bodyStartY; segmentY < bodyEndY; segmentY += 32) {
+    const bodyHeight = Math.max(0, bodyEndY - bodyStartY);
+    if (bodyHeight > 0) {
+      // Use a center crop from the atlas body tile so the shaft stays seamless
+      // instead of repeating the rim detail baked into the full 16x16 sprite.
       ctx.drawImage(
         sprites,
-        PIPE_SPRITES.body.x,
+        PIPE_SPRITES.body.x + 3,
         PIPE_SPRITES.body.y,
-        PIPE_SPRITES.body.width,
+        PIPE_SPRITES.body.width - 6,
         PIPE_SPRITES.body.height,
         bodyX,
-        segmentY,
+        bodyStartY,
         bodyWidth,
-        Math.min(32, bodyEndY - segmentY),
+        bodyHeight,
       );
     }
     ctx.drawImage(
@@ -481,13 +520,16 @@ function readySubtitle() {
   if (!connected) {
     return "Connect to the server to play.";
   }
+  if (keyboardModeEnabled()) {
+    return "Press Space to start the run.";
+  }
   if (cameraStarting) {
     return "Allow camera access to start.";
   }
   if (mediaPipeReady) {
     return "Use the 67 hand gesture to start the run.";
   }
-  return config.space67Keyboard ? "Space or Flap starts the run." : "Flap starts the run.";
+  return "Starting camera tracking.";
 }
 
 function drawMessage(title, subtitle) {
@@ -507,6 +549,10 @@ function drawMessage(title, subtitle) {
 }
 
 async function startCamera() {
+  if (!cameraModeEnabled()) {
+    statusText.textContent = "Camera is disabled in keyboard mode.";
+    return;
+  }
   try {
     cameraStarting = true;
     statusText.textContent = "Loading hand model.";
@@ -537,7 +583,6 @@ async function startCamera() {
     await video.play();
     mediaPipeReady = true;
     cameraStarting = false;
-    flapButton.disabled = true;
     mode = "Tracking";
     statusText.textContent = connected ? "Camera tracking active." : "Camera ready, server offline.";
 
@@ -548,7 +593,6 @@ async function startCamera() {
   } catch (error) {
     cameraStarting = false;
     mediaPipeReady = false;
-    flapButton.disabled = false;
     statusText.textContent = `Camera unavailable: ${error.message}`;
   }
 }
@@ -695,20 +739,20 @@ window.addEventListener("pointerdown", (event) => {
   if (event.target.closest(".controls")) {
     return;
   }
-  sendManualFlap();
+  if (keyboardModeEnabled()) {
+    statusText.textContent = "Use Space in keyboard mode.";
+    return;
+  }
+  statusText.textContent = "Pointer input is disabled in camera mode.";
 });
 
 window.addEventListener("keydown", (event) => {
   if (event.code === "Space") {
     event.preventDefault();
-    if (config.space67Keyboard) {
-      if (manualInputEnabled()) {
-        signalSynthetic67();
-      } else {
-        statusText.textContent = "Keyboard input is disabled while camera tracking is active.";
-      }
+    if (keyboardModeEnabled()) {
+      signalSynthetic67();
     } else {
-      sendManualFlap();
+      statusText.textContent = "Keyboard input is disabled in camera mode.";
     }
   }
 });
