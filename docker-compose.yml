@@ -7,7 +7,8 @@ services:
       HOST: 0.0.0.0
       PORT: 8787
       NODE_ENV: production
-      SPACE_67_KEYBOARD: "true"
+      SPACE_67_KEYBOARD: "false"
+      FLAG: "${FLAG:-grey{placeholder_6767}}"
     ports:
       - "8787:8787"
     restart: unless-stopped
@@ -16,6 +17,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    environment:
+      DIAGNOSTIC_PAGE: "${DIAGNOSTIC_PAGE:-true}"
     depends_on:
       - backend
     ports:

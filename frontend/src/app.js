@@ -1,7 +1,14 @@
+import {
+  FAST_HAND_LANDMARKER_OPTIONS,
+  handAnchorPoint,
+  handHeight,
+  orderedHands,
+  screenSideIndex,
+} from "./gesture.js";
+
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
 const cameraButton = document.querySelector("#cameraButton");
-const flapButton = document.querySelector("#flapButton");
 const restartButton = document.querySelector("#restartButton");
 const video = document.querySelector("#cameraPreview");
 const handOverlay = document.querySelector("#handOverlay");
@@ -10,16 +17,16 @@ const statusText = document.querySelector("#status");
 const scoreText = document.querySelector("#score");
 const bestText = document.querySelector("#best");
 const modeText = document.querySelector("#mode");
+const flagBanner = document.querySelector("#flagBanner");
+const flagText = document.querySelector("#flagText");
 const gestureStateText = document.querySelector("#gestureState");
 const flapPulseText = document.querySelector("#flapPulse");
 const leftMeter = document.querySelector("#leftMeter");
 const rightMeter = document.querySelector("#rightMeter");
 
-const HAND_CROSS_THRESHOLD = 0.02;
-const MIN_CROSSES_PER_FLAP = 2;
-const HAND_TRACKING_GRACE_MS = 240;
-const HAND_ANCHOR_SMOOTHING = 0.35;
 const HAND_ANCHOR_MARKER_RADIUS = 12;
+const HAND_SIDE_GUIDE_TOP = 10;
+const HAND_SIDE_GUIDE_HEIGHT = 24;
 const HAND_OVERLAY_STYLES = [
   { anchor: "#ff3b5c" },
   { anchor: "#42ff87" },
@@ -59,10 +66,19 @@ let state = {
   velocity: 0,
   score: 0,
   best: 0,
+  won: false,
+  flag: "",
   elapsed: 0,
   gameOver: false,
   shadowbanned: false,
   awaitingStart: true,
+  gesture: {
+    status: "NEUTRAL",
+    handCount: 0,
+    tracking: "reset",
+    delta: null,
+    triggered: false,
+  },
   pipes: [],
 };
 
@@ -74,98 +90,9 @@ let visionLoopStarted = false;
 let handLandmarker = null;
 let lastVideoTime = -1;
 let sentFlaps = 0;
+let sentHandSamples = 0;
 let mode = "Connecting";
 let synthetic67LeftHigh = false;
-
-class GestureInterpreter {
-  constructor(onFlap) {
-    this.previousState = "NEUTRAL";
-    this.pendingCross = false;
-    this.crossCount = 0;
-    this.lastSeenAt = 0;
-    this.smoothedAnchors = [null, null];
-    this.onFlap = onFlap;
-  }
-
-  process(hands, now = performance.now()) {
-    if (hands.length < 2) {
-      this.holdOrReset(now);
-      return;
-    }
-
-    const leftAnchor = this.smoothAnchor(0, handAnchorPoint(hands[0]));
-    const rightAnchor = this.smoothAnchor(1, handAnchorPoint(hands[1]));
-    if (!leftAnchor || !rightAnchor) {
-      this.holdOrReset(now);
-      return;
-    }
-    this.lastSeenAt = now;
-
-    const leftY = leftAnchor.y;
-    const rightY = rightAnchor.y;
-    leftMeter.value = 1 - leftY;
-    rightMeter.value = 1 - rightY;
-
-    const delta = leftY - rightY;
-    if (Math.abs(delta) < HAND_CROSS_THRESHOLD) {
-      this.pendingCross = true;
-      gestureStateText.textContent = `CROSSING ${this.crossCount}/${MIN_CROSSES_PER_FLAP}`;
-      return;
-    }
-
-    const currentState = delta < 0 ? "LEFT_HIGH" : "RIGHT_HIGH";
-    if (
-      this.pendingCross &&
-      this.previousState !== "NEUTRAL" &&
-      currentState !== this.previousState
-    ) {
-      this.crossCount += 1;
-      if (this.crossCount >= MIN_CROSSES_PER_FLAP) {
-        this.onFlap("gesture");
-        this.crossCount = 0;
-      }
-    }
-    this.pendingCross = false;
-    gestureStateText.textContent = `${currentState} ${this.crossCount}/${MIN_CROSSES_PER_FLAP}`;
-
-    this.previousState = currentState;
-  }
-
-  smoothAnchor(index, anchor) {
-    if (!anchor) {
-      return null;
-    }
-
-    const previous = this.smoothedAnchors[index];
-    if (!previous) {
-      this.smoothedAnchors[index] = anchor;
-      return anchor;
-    }
-
-    const smoothed = {
-      x: previous.x + (anchor.x - previous.x) * HAND_ANCHOR_SMOOTHING,
-      y: previous.y + (anchor.y - previous.y) * HAND_ANCHOR_SMOOTHING,
-      z: previous.z + (anchor.z - previous.z) * HAND_ANCHOR_SMOOTHING,
-    };
-    this.smoothedAnchors[index] = smoothed;
-    return smoothed;
-  }
-
-  holdOrReset(now) {
-    if (now - this.lastSeenAt <= HAND_TRACKING_GRACE_MS) {
-      gestureStateText.textContent = "TRACKING HOLD";
-      return;
-    }
-
-    this.previousState = "NEUTRAL";
-    this.pendingCross = false;
-    this.crossCount = 0;
-    this.smoothedAnchors = [null, null];
-    gestureStateText.textContent = "NEUTRAL";
-  }
-}
-
-const gestures = new GestureInterpreter(sendFlap);
 
 connect();
 requestAnimationFrame(draw);
@@ -245,14 +172,6 @@ function sendFlap(source) {
   mode = config.space67Keyboard ? "Keyboard" : mediaPipeReady ? "Tracking" : "Online";
 }
 
-function sendManualFlap() {
-  if (!keyboardModeEnabled()) {
-    statusText.textContent = "Manual input is disabled in camera mode.";
-    return;
-  }
-  statusText.textContent = "Use Space in keyboard mode.";
-}
-
 function keyboardModeEnabled() {
   return config.space67Keyboard;
 }
@@ -263,7 +182,6 @@ function cameraModeEnabled() {
 
 function applyInputMode() {
   cameraButton.disabled = keyboardModeEnabled();
-  flapButton.disabled = true;
 
   if (keyboardModeEnabled()) {
     stopCameraTracking();
@@ -293,7 +211,9 @@ function stopCameraTracking() {
 
 function restartRun() {
   sentFlaps = 0;
+  sentHandSamples = 0;
   flapPulseText.textContent = "0 sent";
+  state = { ...state, won: false, flag: "" };
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "restart" }));
   }
@@ -320,8 +240,21 @@ function draw() {
   scoreText.textContent = String(state.score);
   bestText.textContent = String(state.best);
   modeText.textContent = mode;
+  gestureStateText.textContent = state.gesture?.status || "NEUTRAL";
+  updateFlagBanner();
 
   requestAnimationFrame(draw);
+}
+
+function updateFlagBanner() {
+  if (!state.won) {
+    flagBanner.hidden = true;
+    flagText.textContent = "";
+    return;
+  }
+
+  flagBanner.hidden = false;
+  flagText.textContent = state.flag || "Flag not configured.";
 }
 
 function drawSky() {
@@ -568,14 +501,14 @@ async function startCamera() {
           "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
         delegate: "GPU",
       },
-      runningMode: "VIDEO",
-      numHands: 2,
+      ...FAST_HAND_LANDMARKER_OPTIONS,
     });
 
     video.srcObject = await navigator.mediaDevices.getUserMedia({
       video: {
         width: { ideal: 960 },
         height: { ideal: 540 },
+        frameRate: { ideal: 60 },
         facingMode: "user",
       },
       audio: false,
@@ -603,7 +536,9 @@ function trackHands() {
       lastVideoTime = video.currentTime;
       const result = handLandmarker.detectForVideo(video, performance.now());
       const hands = orderedHands(result);
-      gestures.process(hands);
+      const sample = handSample(hands);
+      sendHandSample(sample);
+      updateHandMeters(sample);
       drawHandOverlay(hands);
       if (!result.landmarks || result.landmarks.length < 2) {
         statusText.textContent = "Show both hands.";
@@ -615,16 +550,68 @@ function trackHands() {
   requestAnimationFrame(trackHands);
 }
 
-function drawHandOverlay(hands) {
-  const overlaySize = resizeHandOverlay();
-  handCtx.clearRect(0, 0, overlaySize.width, overlaySize.height);
+function handSample(hands) {
+  const sample = {
+    leftY: null,
+    rightY: null,
+    handCount: Math.min(hands.length, 2),
+  };
 
   hands.slice(0, 2).forEach((hand, index) => {
-    const style = HAND_OVERLAY_STYLES[index] || HAND_OVERLAY_STYLES[0];
     const anchor = handAnchorPoint(hand);
     if (!anchor) {
       return;
     }
+
+    const side = hands.length >= 2 ? index : screenSideIndex(anchor);
+    if (side === 0) {
+      sample.leftY = anchor.y;
+    } else {
+      sample.rightY = anchor.y;
+    }
+  });
+
+  return sample;
+}
+
+function sendHandSample(sample) {
+  if (!connected || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(
+    JSON.stringify({
+      type: "hands",
+      leftY: sample.leftY,
+      rightY: sample.rightY,
+      handCount: sample.handCount,
+      clientTime: Date.now(),
+    }),
+  );
+  sentHandSamples += 1;
+  flapPulseText.textContent = `${sentHandSamples} samples`;
+}
+
+function updateHandMeters(sample) {
+  if (sample.leftY !== null) {
+    leftMeter.value = handHeight({ y: sample.leftY });
+  }
+  if (sample.rightY !== null) {
+    rightMeter.value = handHeight({ y: sample.rightY });
+  }
+}
+
+function drawHandOverlay(hands) {
+  const overlaySize = resizeHandOverlay();
+  handCtx.clearRect(0, 0, overlaySize.width, overlaySize.height);
+  drawHandSideGuide(handCtx, overlaySize);
+
+  hands.slice(0, 2).forEach((hand) => {
+    const anchor = handAnchorPoint(hand);
+    if (!anchor) {
+      return;
+    }
+    const style = HAND_OVERLAY_STYLES[screenSideIndex(anchor)] || HAND_OVERLAY_STYLES[0];
     const anchorPoint = landmarkToPreviewPoint(anchor, overlaySize);
 
     handCtx.save();
@@ -658,6 +645,63 @@ function drawHandOverlay(hands) {
   });
 }
 
+function drawHandSideGuide(ctx, overlaySize) {
+  const middleX = overlaySize.width / 2;
+  const top = HAND_SIDE_GUIDE_TOP;
+  const bottom = top + HAND_SIDE_GUIDE_HEIGHT;
+  const leftColor = HAND_OVERLAY_STYLES[0].anchor;
+  const rightColor = HAND_OVERLAY_STYLES[1].anchor;
+  const leftLabelX = middleX / 2;
+  const rightLabelX = middleX + middleX / 2;
+
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.65)";
+  ctx.shadowBlur = 4;
+
+  ctx.globalAlpha = 0.92;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.beginPath();
+  ctx.moveTo(middleX, 0);
+  ctx.lineTo(middleX, overlaySize.height);
+  ctx.stroke();
+
+  drawSideBracket(ctx, leftLabelX, top, bottom, leftColor, "left");
+  drawSideBracket(ctx, rightLabelX, top, bottom, rightColor, "right");
+
+  ctx.beginPath();
+  ctx.moveTo(Math.max(18, leftLabelX - 42), top + HAND_SIDE_GUIDE_HEIGHT / 2);
+  ctx.lineTo(middleX - 10, top + HAND_SIDE_GUIDE_HEIGHT / 2);
+  ctx.moveTo(middleX + 10, top + HAND_SIDE_GUIDE_HEIGHT / 2);
+  ctx.lineTo(Math.min(overlaySize.width - 18, rightLabelX + 42), top + HAND_SIDE_GUIDE_HEIGHT / 2);
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "800 13px Inter, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("L", leftLabelX, bottom + 12);
+  ctx.fillText("R", rightLabelX, bottom + 12);
+  ctx.restore();
+}
+
+function drawSideBracket(ctx, centerX, top, bottom, color, direction) {
+  const pointX = direction === "left" ? centerX - 18 : centerX + 18;
+  const innerX = direction === "left" ? centerX - 4 : centerX + 4;
+
+  ctx.beginPath();
+  ctx.moveTo(pointX, top + HAND_SIDE_GUIDE_HEIGHT / 2);
+  ctx.lineTo(innerX, top);
+  ctx.lineTo(innerX, bottom);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.stroke();
+}
+
 function resizeHandOverlay() {
   const rect = handOverlay.getBoundingClientRect();
   const width = Math.max(1, Math.round(rect.width));
@@ -671,27 +715,6 @@ function resizeHandOverlay() {
   }
   handCtx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   return { width, height };
-}
-
-function handAnchorPoint(hand) {
-  const landmarks = hand.filter(
-    (landmark) => landmark && Number.isFinite(landmark.x) && Number.isFinite(landmark.y),
-  );
-  if (!landmarks.length) {
-    return null;
-  }
-
-  return {
-    x: median(landmarks.map((landmark) => landmark.x)),
-    y: median(landmarks.map((landmark) => landmark.y)),
-    z: median(landmarks.map((landmark) => landmark.z || 0)),
-  };
-}
-
-function median(values) {
-  const sorted = [...values].sort((first, second) => first - second);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
 }
 
 function landmarkToPreviewPoint(landmark, overlaySize) {
@@ -710,29 +733,11 @@ function landmarkToPreviewPoint(landmark, overlaySize) {
   };
 }
 
-function orderedHands(result) {
-  const landmarks = result.landmarks || [];
-  if (landmarks.length < 2) {
-    return landmarks;
-  }
-
-  const hands = landmarks.map((handLandmarks) => ({
-    landmarks: handLandmarks,
-    anchor: handAnchorPoint(handLandmarks),
-  }));
-
-  return hands
-    .sort((first, second) => (second.anchor?.x || 0) - (first.anchor?.x || 0))
-    .slice(0, 2)
-    .map((hand) => hand.landmarks);
-}
-
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
 cameraButton.addEventListener("click", startCamera);
-flapButton.addEventListener("click", sendManualFlap);
 restartButton.addEventListener("click", restartRun);
 
 window.addEventListener("pointerdown", (event) => {

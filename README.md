@@ -22,3 +22,18 @@ jloh02
 # Challenge
 
 Play flappy bird with 67 hand gestures
+
+# Diagnostics
+
+The hand-tracking diagnostic route is disabled by default. Start the frontend
+with `DIAGNOSTIC_PAGE=true` to expose `/diagnostics`:
+
+```sh
+DIAGNOSTIC_PAGE=true npm run start:frontend
+```
+
+Open `http://127.0.0.1:4173/diagnostics` to view live hand-height, delta, threshold,
+cross-count, and jump-trigger markers.
+
+For Docker Compose, pass `DIAGNOSTIC_PAGE=true`; Compose forwards it only to the
+frontend container.

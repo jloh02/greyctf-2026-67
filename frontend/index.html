@@ -26,11 +26,11 @@
           </div>
         </div>
 
-        <div class="controls" aria-label="game controls">
-          <button id="cameraButton" type="button">Camera</button>
-          <button id="flapButton" type="button">Flap</button>
-          <button id="restartButton" type="button">Restart</button>
+        <div id="flagBanner" class="flag-banner" hidden>
+          <span class="label">Flag</span>
+          <code id="flagText"></code>
         </div>
+
       </section>
 
       <aside class="telemetry" aria-label="tracking telemetry">
@@ -56,6 +56,10 @@
         <div class="camera-frame">
           <video id="cameraPreview" playsinline muted></video>
           <canvas id="handOverlay" aria-hidden="true"></canvas>
+        </div>
+        <div class="controls" aria-label="game controls">
+          <button id="cameraButton" type="button">Camera</button>
+          <button id="restartButton" type="button">Restart</button>
         </div>
         <section class="credits-panel" aria-label="asset credits">
           <div class="credits-title">Asset credits</div>

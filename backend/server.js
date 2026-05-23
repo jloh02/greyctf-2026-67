@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 const PORT = Number(process.env.PORT || "8787");
 const HOST = process.env.HOST || "127.0.0.1";
 const SPACE_67_KEYBOARD = parseBoolean(process.env.SPACE_67_KEYBOARD, false);
+const FINAL_FLAG = process.env.FINAL_FLAG || process.env.FLAG || "";
 
 const GAME_WIDTH = 960;
 const GAME_HEIGHT = 540;
@@ -21,6 +22,17 @@ const PIPE_SPACING = PIPE_SPEED * PIPE_INTERVAL;
 const FLOOR_Y = GAME_HEIGHT - 48;
 const TICK_SECONDS = 1 / 60;
 const STATE_SEND_MS = 1000 / 30;
+const WIN_SCORE = 100;
+const GESTURE_CONFIG = {
+  crossThreshold: 0.1,
+  minCrossesPerFlap: 2,
+  trackingGraceMs: 420,
+  anchorSmoothing: 0.45,
+  fastAnchorSmoothing: 0.72,
+  fastMovementThreshold: 0.075,
+  jumpDebounceMs: 300,
+  levelResetMs: 360,
+};
 
 const sockets = new Set();
 
@@ -109,6 +121,7 @@ class GameSocket {
       },
       config: {
         space67Keyboard: SPACE_67_KEYBOARD,
+        gesture: GESTURE_CONFIG,
       },
     });
     this.game.log("Server-authoritative room started.", "info");
@@ -156,6 +169,17 @@ class GameSocket {
       this.sendState(performance.now(), true);
       if (this.game.disconnectReason) {
         this.close(1008, this.game.disconnectReason);
+      }
+      return;
+    }
+
+    if (message.type === "hands") {
+      const triggered = this.game.processHandSample(message);
+      if (triggered) {
+        this.sendState(performance.now(), true);
+        if (this.game.disconnectReason) {
+          this.close(1008, this.game.disconnectReason);
+        }
       }
       return;
     }
@@ -236,6 +260,10 @@ class GameSession {
   constructor(playerId) {
     this.playerId = playerId;
     this.best = 0;
+    this.gesture = new ServerGestureInterpreter({
+      onFlap: () => this.flap("67 gesture"),
+      config: GESTURE_CONFIG,
+    });
     this.reset();
   }
 
@@ -250,6 +278,7 @@ class GameSession {
     this.awaitingStart = true;
     this.disconnectReason = "";
     this.flapTimes = [];
+    this.gesture.reset();
     this.pipes = [];
     this.nextPipeId = 1;
     this.seedPipes();
@@ -308,6 +337,18 @@ class GameSession {
     this.flapTimes.push(now);
     this.flapTimes = this.flapTimes.slice(-12);
     this.log(`Accepted flap from ${source}.`, "info");
+  }
+
+  processHandSample(message) {
+    const telemetry = this.gesture.process(
+      {
+        leftY: normalizedOrNull(message.leftY),
+        rightY: normalizedOrNull(message.rightY),
+        handCount: clampInteger(message.handCount, 0, 2),
+      },
+      performance.now(),
+    );
+    return telemetry.triggered;
   }
 
   auditFlap(now) {
@@ -391,10 +432,13 @@ class GameSession {
       velocity: this.velocity,
       score: this.score,
       best: this.best,
+      won: this.score >= WIN_SCORE,
+      flag: this.score >= WIN_SCORE ? FINAL_FLAG : "",
       elapsed: this.elapsed,
       gameOver: this.gameOver,
       shadowbanned: this.shadowbanned,
       awaitingStart: this.awaitingStart,
+      gesture: this.gesture.snapshot(),
       pipes: this.pipes.map((pipe) => ({
         id: pipe.id,
         x: pipe.x,
@@ -406,6 +450,211 @@ class GameSession {
 
   log(message, level = "info") {
     console.log(`[${level}] ${this.playerId}: ${message}`);
+  }
+}
+
+class ServerGestureInterpreter {
+  constructor({ onFlap = () => {}, config = {} } = {}) {
+    this.config = { ...GESTURE_CONFIG, ...config };
+    this.onFlap = onFlap;
+    this.reset();
+  }
+
+  reset() {
+    this.previousState = "NEUTRAL";
+    this.crossedLevelBand = false;
+    this.crossCount = 0;
+    this.lastJumpAt = -Infinity;
+    this.lastCrossAt = -Infinity;
+    this.levelEnteredAt = null;
+    this.lastSeenAt = 0;
+    this.heights = [null, null];
+    this.telemetry = {
+      status: "NEUTRAL",
+      handCount: 0,
+      tracking: "reset",
+      delta: null,
+      triggered: false,
+    };
+  }
+
+  process(sample, now = performance.now()) {
+    const resolved = this.resolveSample(sample, now);
+    if (!resolved) {
+      return this.holdOrReset(now, sample.handCount);
+    }
+
+    const { leftHeight, rightHeight, tracking } = resolved;
+    if (sample.handCount >= 2) {
+      this.lastSeenAt = now;
+    }
+
+    const delta = leftHeight - rightHeight;
+    const currentState = this.deltaState(delta);
+    if (currentState === "LEVEL") {
+      if (this.levelEnteredAt === null) {
+        this.levelEnteredAt = now;
+      }
+      if (this.previousState !== "NEUTRAL") {
+        this.crossedLevelBand = true;
+      }
+      const levelElapsedMs = now - this.levelEnteredAt;
+      if (levelElapsedMs > this.config.levelResetMs) {
+        this.previousState = "NEUTRAL";
+        this.crossedLevelBand = false;
+        this.crossCount = 0;
+      }
+      return this.emit({
+        status: `LEVEL ${this.crossCount}/${this.config.minCrossesPerFlap}`,
+        handCount: sample.handCount,
+        tracking,
+        leftHeight,
+        rightHeight,
+        delta,
+        currentState,
+        triggered: false,
+        levelElapsedMs,
+      });
+    }
+
+    this.levelEnteredAt = null;
+    let triggered = false;
+    if (
+      this.previousState !== "NEUTRAL" &&
+      currentState !== this.previousState &&
+      this.crossedLevelBand
+    ) {
+      this.lastCrossAt = now;
+      if (this.jumpDebounceRemaining(now) <= 0) {
+        this.crossCount += 1;
+      } else {
+        this.crossCount = 0;
+      }
+
+      if (this.crossCount >= this.config.minCrossesPerFlap) {
+        this.onFlap();
+        this.lastJumpAt = now;
+        this.crossCount = 0;
+        triggered = true;
+      }
+    }
+    this.crossedLevelBand = false;
+    this.previousState = currentState;
+
+    return this.emit({
+      status: `${currentState} ${this.crossCount}/${this.config.minCrossesPerFlap}`,
+      handCount: sample.handCount,
+      tracking,
+      leftHeight,
+      rightHeight,
+      delta,
+      currentState,
+      triggered,
+    });
+  }
+
+  resolveSample(sample, now) {
+    if (sample.handCount >= 2 && sample.leftY !== null && sample.rightY !== null) {
+      const leftHeight = this.smoothHeight(0, handHeight(sample.leftY));
+      const rightHeight = this.smoothHeight(1, handHeight(sample.rightY));
+      return { leftHeight, rightHeight, tracking: "active" };
+    }
+
+    if (sample.handCount !== 1 || now - this.lastSeenAt > this.config.trackingGraceMs) {
+      return null;
+    }
+
+    if (sample.leftY !== null) {
+      this.smoothHeight(0, handHeight(sample.leftY));
+    }
+    if (sample.rightY !== null) {
+      this.smoothHeight(1, handHeight(sample.rightY));
+    }
+
+    const [leftHeight, rightHeight] = this.heights;
+    if (leftHeight === null || rightHeight === null) {
+      return null;
+    }
+
+    return { leftHeight, rightHeight, tracking: "bridged" };
+  }
+
+  smoothHeight(index, height) {
+    const previous = this.heights[index];
+    if (previous === null) {
+      this.heights[index] = height;
+      return height;
+    }
+
+    const movement = Math.abs(height - previous);
+    const smoothing =
+      movement >= this.config.fastMovementThreshold
+        ? Math.max(this.config.anchorSmoothing, this.config.fastAnchorSmoothing)
+        : this.config.anchorSmoothing;
+    const smoothed = previous + (height - previous) * smoothing;
+    this.heights[index] = smoothed;
+    return smoothed;
+  }
+
+  holdOrReset(now, handCount = 0) {
+    if (now - this.lastSeenAt <= this.config.trackingGraceMs) {
+      return this.emit({
+        status: "TRACKING HOLD",
+        handCount,
+        tracking: "hold",
+        delta: null,
+        triggered: false,
+      });
+    }
+
+    this.previousState = "NEUTRAL";
+    this.crossedLevelBand = false;
+    this.crossCount = 0;
+    this.lastJumpAt = -Infinity;
+    this.lastCrossAt = -Infinity;
+    this.levelEnteredAt = null;
+    this.heights = [null, null];
+    return this.emit({
+      status: "NEUTRAL",
+      handCount,
+      tracking: "missing",
+      delta: null,
+      triggered: false,
+    });
+  }
+
+  deltaState(delta) {
+    if (delta > this.config.crossThreshold) {
+      return "LEFT_HIGH";
+    }
+
+    if (delta < -this.config.crossThreshold) {
+      return "RIGHT_HIGH";
+    }
+
+    return "LEVEL";
+  }
+
+  emit(event) {
+    this.telemetry = {
+      previousState: this.previousState,
+      crossedLevelBand: this.crossedLevelBand,
+      crossCount: this.crossCount,
+      crossThreshold: this.config.crossThreshold,
+      minCrossesPerFlap: this.config.minCrossesPerFlap,
+      levelResetMs: this.config.levelResetMs,
+      jumpDebounceRemainingMs: this.jumpDebounceRemaining(performance.now()),
+      ...event,
+    };
+    return this.telemetry;
+  }
+
+  jumpDebounceRemaining(now) {
+    return Math.max(0, this.config.jumpDebounceMs - (now - this.lastJumpAt));
+  }
+
+  snapshot() {
+    return this.telemetry;
   }
 }
 
@@ -470,6 +719,21 @@ function standardDeviation(values) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampInteger(value, min, max) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.round(clamp(value, min, max));
+}
+
+function normalizedOrNull(value) {
+  return Number.isFinite(value) ? clamp(value, 0, 1) : null;
+}
+
+function handHeight(y) {
+  return 1 - y;
 }
 
 function parseBoolean(value, fallback) {

@@ -1,3 +1,12 @@
-FROM nginx:1.27-alpine
+FROM node:24-alpine
 
-COPY frontend /usr/share/nginx/html
+WORKDIR /app
+
+ENV HOST=0.0.0.0
+ENV PORT=80
+
+COPY frontend ./frontend
+
+EXPOSE 80
+
+CMD ["node", "frontend/dev-server.js"]

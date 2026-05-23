@@ -8,6 +8,7 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PUBLIC_ROOT = resolve(__dirname);
 const PORT = Number(process.env.FRONTEND_PORT || process.env.PORT || "4173");
 const HOST = process.env.FRONTEND_HOST || process.env.HOST || "127.0.0.1";
+const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -29,6 +30,14 @@ const server = createServer(async (request, response) => {
   }
 
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/diagnostics" || url.pathname === "/diagnostics/") {
+    if (!DIAGNOSTIC_PAGE) {
+      response.writeHead(404).end("Not found");
+      return;
+    }
+    await serveStatic("/diagnostics.html", response);
+    return;
+  }
   await serveStatic(url.pathname, response);
 });
 
@@ -38,6 +47,10 @@ server.listen(PORT, HOST, () => {
 
 async function serveStatic(pathname, response) {
   const requestedPath = pathname === "/" ? "/index.html" : decodeURIComponent(pathname);
+  if (requestedPath === "/diagnostics.html" && !DIAGNOSTIC_PAGE) {
+    response.writeHead(404).end("Not found");
+    return;
+  }
   const normalized = normalize(requestedPath).replace(/^(\.\.(\/|\\|$))+/, "");
   const absolutePath = resolve(join(PUBLIC_ROOT, normalized));
 
@@ -61,4 +74,11 @@ async function serveStatic(pathname, response) {
   } catch {
     response.writeHead(404).end("Not found");
   }
+}
+
+function parseBoolean(value, fallback) {
+  if (value === undefined) {
+    return fallback;
+  }
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
