@@ -28,6 +28,8 @@ export class GestureInterpreter {
     this.levelEnteredAt = null;
     this.lastSeenAt = 0;
     this.smoothedAnchors = [null, null];
+    this.anchorVelocities = [null, null];
+    this.lastAnchorTimes = [null, null];
     this.onFlap = onFlap;
     this.onTelemetry = onTelemetry;
   }
@@ -45,6 +47,8 @@ export class GestureInterpreter {
     this.levelEnteredAt = null;
     this.lastSeenAt = 0;
     this.smoothedAnchors = [null, null];
+    this.anchorVelocities = [null, null];
+    this.lastAnchorTimes = [null, null];
     this.emit({
       status: "NEUTRAL",
       handCount: 0,
@@ -145,8 +149,8 @@ export class GestureInterpreter {
 
   resolveHands(hands, now) {
     if (hands.length >= 2) {
-      const leftAnchor = this.smoothAnchor(0, handAnchorPoint(hands[0]));
-      const rightAnchor = this.smoothAnchor(1, handAnchorPoint(hands[1]));
+      const leftAnchor = this.smoothAnchor(0, handAnchorPoint(hands[0]), now);
+      const rightAnchor = this.smoothAnchor(1, handAnchorPoint(hands[1]), now);
       if (!leftAnchor || !rightAnchor) {
         return null;
       }
@@ -154,7 +158,15 @@ export class GestureInterpreter {
       return { leftAnchor, rightAnchor, tracking: "active" };
     }
 
-    if (hands.length !== 1 || now - this.lastSeenAt > this.config.trackingGraceMs) {
+    if (now - this.lastSeenAt > this.config.trackingGraceMs) {
+      return null;
+    }
+
+    if (hands.length === 0) {
+      return this.predictedHands(now, "predicted");
+    }
+
+    if (hands.length !== 1) {
       return null;
     }
 
@@ -164,8 +176,11 @@ export class GestureInterpreter {
     }
 
     const matchedIndex = this.matchSingleHandSlot(anchor);
-    this.smoothAnchor(matchedIndex, anchor);
-    const [leftAnchor, rightAnchor] = this.smoothedAnchors;
+    this.smoothAnchor(matchedIndex, anchor, now);
+    const missingIndex = matchedIndex === 0 ? 1 : 0;
+    const anchors = [...this.smoothedAnchors];
+    anchors[missingIndex] = this.predictAnchor(missingIndex, now);
+    const [leftAnchor, rightAnchor] = anchors;
     if (!leftAnchor || !rightAnchor) {
       return null;
     }
@@ -173,11 +188,21 @@ export class GestureInterpreter {
     return { leftAnchor, rightAnchor, tracking: "bridged" };
   }
 
+  predictedHands(now, tracking) {
+    const leftAnchor = this.predictAnchor(0, now);
+    const rightAnchor = this.predictAnchor(1, now);
+    if (!leftAnchor || !rightAnchor) {
+      return null;
+    }
+
+    return { leftAnchor, rightAnchor, tracking };
+  }
+
   matchSingleHandSlot(anchor) {
     return screenSideIndex(anchor);
   }
 
-  smoothAnchor(index, anchor) {
+  smoothAnchor(index, anchor, now) {
     if (!anchor) {
       return null;
     }
@@ -185,6 +210,8 @@ export class GestureInterpreter {
     const previous = this.smoothedAnchors[index];
     if (!previous) {
       this.smoothedAnchors[index] = anchor;
+      this.anchorVelocities[index] = { x: 0, y: 0, z: 0 };
+      this.lastAnchorTimes[index] = now;
       return anchor;
     }
 
@@ -198,8 +225,38 @@ export class GestureInterpreter {
       y: previous.y + (anchor.y - previous.y) * smoothing,
       z: previous.z + (anchor.z - previous.z) * smoothing,
     };
+    const previousTime = this.lastAnchorTimes[index];
+    const elapsedMs = previousTime === null ? 0 : now - previousTime;
+    if (elapsedMs > 0) {
+      this.anchorVelocities[index] = {
+        x: (smoothed.x - previous.x) / elapsedMs,
+        y: (smoothed.y - previous.y) / elapsedMs,
+        z: (smoothed.z - previous.z) / elapsedMs,
+      };
+    }
+    this.lastAnchorTimes[index] = now;
     this.smoothedAnchors[index] = smoothed;
     return smoothed;
+  }
+
+  predictAnchor(index, now) {
+    const anchor = this.smoothedAnchors[index];
+    const velocity = this.anchorVelocities[index];
+    const lastAnchorTime = this.lastAnchorTimes[index];
+    if (!anchor || !velocity || lastAnchorTime === null) {
+      return null;
+    }
+
+    const elapsedMs = now - lastAnchorTime;
+    if (elapsedMs < 0 || elapsedMs > this.config.trackingGraceMs) {
+      return null;
+    }
+
+    return {
+      x: clamp(anchor.x + velocity.x * elapsedMs, 0, 1),
+      y: clamp(anchor.y + velocity.y * elapsedMs, 0, 1),
+      z: anchor.z + velocity.z * elapsedMs,
+    };
   }
 
   holdOrReset(now, handCount = 0) {
@@ -220,6 +277,8 @@ export class GestureInterpreter {
     this.lastCrossAt = -Infinity;
     this.levelEnteredAt = null;
     this.smoothedAnchors = [null, null];
+    this.anchorVelocities = [null, null];
+    this.lastAnchorTimes = [null, null];
     return this.emit({
       status: "NEUTRAL",
       handCount,
@@ -297,4 +356,8 @@ function median(values) {
   const sorted = [...values].sort((first, second) => first - second);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }

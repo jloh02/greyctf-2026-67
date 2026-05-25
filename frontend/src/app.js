@@ -93,17 +93,26 @@ let sentFlaps = 0;
 let sentHandSamples = 0;
 let mode = "Connecting";
 let synthetic67LeftHigh = false;
+let pingTimer = null;
+let syncState = {
+  rttMs: 0,
+  clockOffsetMs: 0,
+};
+
+const PING_INTERVAL_MS = 2000;
+const SYNC_SMOOTHING = 0.2;
 
 connect();
 requestAnimationFrame(draw);
 
 function connect() {
-  socket = new WebSocket(`${backendWebSocketOrigin()}/ws`);
+  socket = new WebSocket(backendWebSocketUrl());
   statusText.textContent = "Connecting to authority server.";
   mode = "Connecting";
 
   socket.addEventListener("open", () => {
     connected = true;
+    startPingLoop();
     if (!cameraStarting) {
       statusText.textContent = mediaPipeReady ? "Camera tracking active." : "Server connected.";
     }
@@ -133,10 +142,14 @@ function connect() {
       state = message.state;
       return;
     }
+    if (message.type === "pong") {
+      handlePong(message);
+    }
   });
 
   socket.addEventListener("close", () => {
     connected = false;
+    stopPingLoop();
     mode = "Offline";
     statusText.textContent = "Server disconnected. Restart the Node server and refresh.";
   });
@@ -148,16 +161,76 @@ function connect() {
   });
 }
 
-function backendWebSocketOrigin() {
+function backendWebSocketUrl() {
   const configured = new URLSearchParams(window.location.search).get("backend");
   if (configured) {
-    return configured.replace(/^http:/, "ws:").replace(/^https:/, "wss:").replace(/\/$/, "");
+    const base = configured
+      .replace(/^http:/, "ws:")
+      .replace(/^https:/, "wss:")
+      .replace(/\/$/, "")
+      .replace(/\/ws$/, "");
+    return `${base}/ws`;
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const backendPort = window.location.port === "4173" || window.location.port === "80" ? "8787" : window.location.port;
-  const host = backendPort ? `${window.location.hostname}:${backendPort}` : window.location.host;
-  return `${protocol}//${host}`;
+  return `${protocol}//${window.location.host}/ws`;
+}
+
+function startPingLoop() {
+  stopPingLoop();
+  sendPing();
+  pingTimer = setInterval(sendPing, PING_INTERVAL_MS);
+}
+
+function stopPingLoop() {
+  if (pingTimer !== null) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
+}
+
+function sendPing() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(JSON.stringify({ type: "ping", clientTime: Date.now() }));
+}
+
+function handlePong(message) {
+  if (!Number.isFinite(message.clientTime) || !Number.isFinite(message.serverRecv) || !Number.isFinite(message.serverTime)) {
+    return;
+  }
+
+  const clientReceived = Date.now();
+  const rttSample = clientReceived - message.clientTime;
+  const offsetSample = (message.serverRecv - message.clientTime + message.serverTime - clientReceived) / 2;
+
+  syncState.rttMs = smoothSample(syncState.rttMs, rttSample);
+  syncState.clockOffsetMs = smoothSample(syncState.clockOffsetMs, offsetSample);
+  sendSync();
+}
+
+function smoothSample(previous, sample) {
+  if (!previous) {
+    return sample;
+  }
+
+  return previous * (1 - SYNC_SMOOTHING) + sample * SYNC_SMOOTHING;
+}
+
+function sendSync() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(
+    JSON.stringify({
+      type: "sync",
+      rttMs: Math.round(syncState.rttMs),
+      clockOffsetMs: Math.round(syncState.clockOffsetMs),
+    }),
+  );
 }
 
 function sendFlap(source) {

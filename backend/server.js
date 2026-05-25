@@ -1,10 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
+import { extname, join, normalize, resolve } from "node:path";
 
 const PORT = Number(process.env.PORT || "8787");
 const HOST = process.env.HOST || "127.0.0.1";
 const SPACE_67_KEYBOARD = parseBoolean(process.env.SPACE_67_KEYBOARD, false);
 const FINAL_FLAG = process.env.FINAL_FLAG || process.env.FLAG || "";
+const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
+const FRONTEND_ROOT = resolve(process.cwd(), "frontend");
+const MIME_TYPES = new Map([
+  [".html", "text/html; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".md", "text/markdown; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".ico", "image/x-icon"],
+]);
 
 const GAME_WIDTH = 960;
 const GAME_HEIGHT = 540;
@@ -21,7 +38,10 @@ const INITIAL_PIPE_X = GAME_WIDTH + 260;
 const PIPE_SPACING = PIPE_SPEED * PIPE_INTERVAL;
 const FLOOR_Y = GAME_HEIGHT - 48;
 const TICK_SECONDS = 1 / 60;
+const TICK_MS = TICK_SECONDS * 1000;
 const STATE_SEND_MS = 1000 / 30;
+const MAX_LAG_COMPENSATION_MS = 200;
+const HISTORY_CAPACITY = 16;
 const WIN_SCORE = 100;
 const GESTURE_CONFIG = {
   crossThreshold: 0.1,
@@ -36,22 +56,70 @@ const GESTURE_CONFIG = {
 
 const sockets = new Set();
 
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   if (!request.url) {
     response.writeHead(400).end("Bad request");
     return;
   }
 
   const url = new URL(request.url, `http://${request.headers.host}`);
-  if (url.pathname === "/healthz") {
+  if (url.pathname === "/api/healthz") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true, sockets: sockets.size }));
     return;
   }
 
-  response.writeHead(404, { "content-type": "application/json" });
-  response.end(JSON.stringify({ error: "backend websocket service; connect to /ws" }));
+  if (url.pathname.startsWith("/api/")) {
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "Not found" }));
+    return;
+  }
+
+  await serveFrontend(url.pathname, response);
 });
+
+async function serveFrontend(pathname, response) {
+  const requestedPath = resolveFrontendPath(pathname);
+  if (!requestedPath) {
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not found");
+    return;
+  }
+
+  try {
+    const fileStat = await stat(requestedPath);
+    if (!fileStat.isFile()) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not found");
+      return;
+    }
+
+    response.writeHead(200, {
+      "content-type": MIME_TYPES.get(extname(requestedPath)) || "application/octet-stream",
+      "cache-control": "no-store",
+    });
+    createReadStream(requestedPath).pipe(response);
+  } catch {
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not found");
+  }
+}
+
+function resolveFrontendPath(pathname) {
+  let requestedPath = pathname;
+  if (requestedPath === "/") {
+    requestedPath = "/index.html";
+  } else if ((requestedPath === "/diagnostics" || requestedPath === "/diagnostics/") && DIAGNOSTIC_PAGE) {
+    requestedPath = "/diagnostics.html";
+  } else if (requestedPath === "/diagnostics" || requestedPath === "/diagnostics/" || requestedPath === "/diagnostics.html") {
+    return null;
+  }
+
+  const normalized = normalize(decodeURIComponent(requestedPath)).replace(/^(\.\.(\/|\\|$))+/, "");
+  const absolutePath = resolve(join(FRONTEND_ROOT, normalized));
+  if (!absolutePath.startsWith(FRONTEND_ROOT)) {
+    return null;
+  }
+
+  return absolutePath;
+}
 
 server.on("upgrade", (request, socket) => {
   if (request.url && new URL(request.url, `http://${request.headers.host}`).pathname !== "/ws") {
@@ -102,6 +170,11 @@ class GameSocket {
     this.buffer = Buffer.alloc(0);
     this.closed = false;
     this.lastStateSent = 0;
+    this.sessionStartWall = Date.now();
+    this.sessionStartPerf = performance.now();
+    this.rttMs = 0;
+    this.oneWayLagMs = 0;
+    this.clockOffsetMs = 0;
     this.game = new GameSession(this.id);
 
     socket.on("data", (chunk) => this.receive(chunk));
@@ -164,8 +237,19 @@ class GameSocket {
       return;
     }
 
+    if (message.type === "ping") {
+      this.handlePing(message);
+      return;
+    }
+
+    if (message.type === "sync") {
+      this.updateLatency(message);
+      return;
+    }
+
     if (message.type === "flap") {
-      this.game.flap(message.source === "gesture" ? "67 gesture" : "manual input");
+      const actionTime = this.clientPerfTime(message.clientTime);
+      this.game.flap(message.source === "gesture" ? "67 gesture" : "manual input", actionTime);
       this.sendState(performance.now(), true);
       if (this.game.disconnectReason) {
         this.close(1008, this.game.disconnectReason);
@@ -174,7 +258,8 @@ class GameSocket {
     }
 
     if (message.type === "hands") {
-      const triggered = this.game.processHandSample(message);
+      const sampleTime = this.clientPerfTime(message.clientTime);
+      const triggered = this.game.processHandSample(message, sampleTime);
       if (triggered) {
         this.sendState(performance.now(), true);
         if (this.game.disconnectReason) {
@@ -189,6 +274,42 @@ class GameSocket {
       this.game.log("Run reset by client.", "info");
       this.sendState(performance.now(), true);
     }
+  }
+
+  handlePing(message) {
+    const serverRecv = Date.now();
+    this.send({
+      type: "pong",
+      clientTime: message.clientTime,
+      serverRecv,
+      serverTime: Date.now(),
+    });
+  }
+
+  updateLatency(message) {
+    if (Number.isFinite(message.rttMs)) {
+      this.rttMs = clamp(message.rttMs, 0, 2000);
+      this.oneWayLagMs = Math.min(this.rttMs / 2, MAX_LAG_COMPENSATION_MS);
+    }
+
+    if (Number.isFinite(message.clockOffsetMs)) {
+      this.clockOffsetMs = clamp(message.clockOffsetMs, -5000, 5000);
+    }
+  }
+
+  clientPerfTime(clientTime) {
+    const now = performance.now();
+    if (!Number.isFinite(clientTime)) {
+      return now - this.oneWayLagMs;
+    }
+
+    if (this.rttMs === 0) {
+      return now;
+    }
+
+    const clientAsServerWall = clientTime + this.clockOffsetMs;
+    const elapsedWall = clientAsServerWall - this.sessionStartWall;
+    return this.sessionStartPerf + elapsedWall - this.oneWayLagMs;
   }
 
   tick(dt, now) {
@@ -261,9 +382,10 @@ class GameSession {
     this.playerId = playerId;
     this.best = 0;
     this.gesture = new ServerGestureInterpreter({
-      onFlap: () => this.flap("67 gesture"),
+      onFlap: (time) => this.flap("67 gesture", time),
       config: GESTURE_CONFIG,
     });
+    this.history = [];
     this.reset();
   }
 
@@ -278,6 +400,8 @@ class GameSession {
     this.awaitingStart = true;
     this.disconnectReason = "";
     this.flapTimes = [];
+    this.history = [];
+    this.replaying = false;
     this.gesture.reset();
     this.pipes = [];
     this.nextPipeId = 1;
@@ -313,14 +437,29 @@ class GameSession {
     this.nextPipeId += 1;
   }
 
-  flap(source) {
+  flap(source, actionTimeMs = performance.now()) {
     if (this.gameOver) {
       this.reset();
       this.log("Run restarted by flap.", "info");
     }
 
     const now = performance.now();
-    const verdict = this.auditFlap(now);
+    const effectiveTime = clamp(
+      Number.isFinite(actionTimeMs) ? actionTimeMs : now,
+      now - MAX_LAG_COMPENSATION_MS,
+      now,
+    );
+
+    if (effectiveTime < now - 1) {
+      this.replayTo(effectiveTime, () => this.applyFlapEffect(source, effectiveTime), now);
+      return;
+    }
+
+    this.applyFlapEffect(source, effectiveTime);
+  }
+
+  applyFlapEffect(source, auditTime) {
+    const verdict = this.auditFlap(auditTime);
     if (verdict.blocked) {
       this.gameOver = true;
       this.disconnectReason = verdict.message;
@@ -334,21 +473,111 @@ class GameSession {
 
     this.awaitingStart = false;
     this.velocity = FLAP_IMPULSE;
-    this.flapTimes.push(now);
+    this.flapTimes.push(auditTime);
     this.flapTimes = this.flapTimes.slice(-12);
     this.log(`Accepted flap from ${source}.`, "info");
   }
 
-  processHandSample(message) {
+  processHandSample(message, sampleTime = performance.now()) {
     const telemetry = this.gesture.process(
       {
         leftY: normalizedOrNull(message.leftY),
         rightY: normalizedOrNull(message.rightY),
         handCount: clampInteger(message.handCount, 0, 2),
       },
-      performance.now(),
+      sampleTime,
     );
     return telemetry.triggered;
+  }
+
+  recordHistory(now) {
+    if (this.replaying) {
+      return;
+    }
+
+    this.history.push(this.captureSnapshot(now));
+    if (this.history.length > HISTORY_CAPACITY) {
+      this.history.shift();
+    }
+  }
+
+  captureSnapshot(now) {
+    return {
+      t: now,
+      birdY: this.birdY,
+      velocity: this.velocity,
+      elapsed: this.elapsed,
+      spawnTimer: this.spawnTimer,
+      score: this.score,
+      best: this.best,
+      gameOver: this.gameOver,
+      shadowbanned: this.shadowbanned,
+      awaitingStart: this.awaitingStart,
+      flapTimes: [...this.flapTimes],
+      nextPipeId: this.nextPipeId,
+      pipes: this.pipes.map((pipe) => ({ ...pipe })),
+    };
+  }
+
+  restoreSnapshot(snapshot) {
+    this.birdY = snapshot.birdY;
+    this.velocity = snapshot.velocity;
+    this.elapsed = snapshot.elapsed;
+    this.spawnTimer = snapshot.spawnTimer;
+    this.score = snapshot.score;
+    this.best = snapshot.best;
+    this.gameOver = snapshot.gameOver;
+    this.shadowbanned = snapshot.shadowbanned;
+    this.awaitingStart = snapshot.awaitingStart;
+    this.flapTimes = [...snapshot.flapTimes];
+    this.nextPipeId = snapshot.nextPipeId;
+    this.pipes = snapshot.pipes.map((pipe) => ({ ...pipe }));
+  }
+
+  findSnapshotAtOrBefore(targetMs) {
+    let best = null;
+    for (const snapshot of this.history) {
+      if (snapshot.t <= targetMs && (!best || snapshot.t > best.t)) {
+        best = snapshot;
+      }
+    }
+    return best;
+  }
+
+  replayTo(targetMs, applyAction, endMs) {
+    const snapshot = this.findSnapshotAtOrBefore(targetMs);
+    if (!snapshot) {
+      applyAction();
+      return;
+    }
+
+    this.replaying = true;
+    try {
+      this.restoreSnapshot(snapshot);
+      let t = snapshot.t;
+
+      while (t + TICK_MS <= targetMs && !this.gameOver) {
+        this.tick(TICK_SECONDS, t + TICK_MS);
+        t += TICK_MS;
+      }
+
+      if (!this.gameOver) {
+        applyAction();
+      }
+
+      while (t + TICK_MS <= endMs && !this.gameOver) {
+        this.tick(TICK_SECONDS, t + TICK_MS);
+        t += TICK_MS;
+      }
+
+      const remainingMs = endMs - t;
+      if (remainingMs > 0.5 && !this.gameOver) {
+        this.tick(remainingMs / 1000, endMs);
+      }
+    } finally {
+      this.replaying = false;
+      this.history = [];
+    }
   }
 
   auditFlap(now) {
@@ -416,6 +645,8 @@ class GameSession {
       this.gameOver = true;
       this.log(this.shadowbanned ? "Run terminated by delayed authority verdict." : "Collision.", "danger");
     }
+
+    this.recordHistory(now);
   }
 
   collidesWithPipe() {
@@ -469,6 +700,8 @@ class ServerGestureInterpreter {
     this.levelEnteredAt = null;
     this.lastSeenAt = 0;
     this.heights = [null, null];
+    this.heightVelocities = [0, 0];
+    this.lastHeightTimes = [null, null];
     this.telemetry = {
       status: "NEUTRAL",
       handCount: 0,
@@ -532,7 +765,7 @@ class ServerGestureInterpreter {
       }
 
       if (this.crossCount >= this.config.minCrossesPerFlap) {
-        this.onFlap();
+        this.onFlap(now);
         this.lastJumpAt = now;
         this.crossCount = 0;
         triggered = true;
@@ -555,23 +788,32 @@ class ServerGestureInterpreter {
 
   resolveSample(sample, now) {
     if (sample.handCount >= 2 && sample.leftY !== null && sample.rightY !== null) {
-      const leftHeight = this.smoothHeight(0, handHeight(sample.leftY));
-      const rightHeight = this.smoothHeight(1, handHeight(sample.rightY));
+      const leftHeight = this.smoothHeight(0, handHeight(sample.leftY), now);
+      const rightHeight = this.smoothHeight(1, handHeight(sample.rightY), now);
       return { leftHeight, rightHeight, tracking: "active" };
     }
 
-    if (sample.handCount !== 1 || now - this.lastSeenAt > this.config.trackingGraceMs) {
+    if (now - this.lastSeenAt > this.config.trackingGraceMs) {
+      return null;
+    }
+
+    if (sample.handCount === 0) {
+      return this.predictedSample(now, "predicted");
+    }
+
+    if (sample.handCount !== 1) {
       return null;
     }
 
     if (sample.leftY !== null) {
-      this.smoothHeight(0, handHeight(sample.leftY));
+      this.smoothHeight(0, handHeight(sample.leftY), now);
     }
     if (sample.rightY !== null) {
-      this.smoothHeight(1, handHeight(sample.rightY));
+      this.smoothHeight(1, handHeight(sample.rightY), now);
     }
 
-    const [leftHeight, rightHeight] = this.heights;
+    const leftHeight = sample.leftY !== null ? this.heights[0] : this.predictHeight(0, now);
+    const rightHeight = sample.rightY !== null ? this.heights[1] : this.predictHeight(1, now);
     if (leftHeight === null || rightHeight === null) {
       return null;
     }
@@ -579,10 +821,22 @@ class ServerGestureInterpreter {
     return { leftHeight, rightHeight, tracking: "bridged" };
   }
 
-  smoothHeight(index, height) {
+  predictedSample(now, tracking) {
+    const leftHeight = this.predictHeight(0, now);
+    const rightHeight = this.predictHeight(1, now);
+    if (leftHeight === null || rightHeight === null) {
+      return null;
+    }
+
+    return { leftHeight, rightHeight, tracking };
+  }
+
+  smoothHeight(index, height, now) {
     const previous = this.heights[index];
     if (previous === null) {
       this.heights[index] = height;
+      this.heightVelocities[index] = 0;
+      this.lastHeightTimes[index] = now;
       return height;
     }
 
@@ -592,8 +846,29 @@ class ServerGestureInterpreter {
         ? Math.max(this.config.anchorSmoothing, this.config.fastAnchorSmoothing)
         : this.config.anchorSmoothing;
     const smoothed = previous + (height - previous) * smoothing;
+    const previousTime = this.lastHeightTimes[index];
+    const elapsedMs = previousTime === null ? 0 : now - previousTime;
+    if (elapsedMs > 0) {
+      this.heightVelocities[index] = (smoothed - previous) / elapsedMs;
+    }
+    this.lastHeightTimes[index] = now;
     this.heights[index] = smoothed;
     return smoothed;
+  }
+
+  predictHeight(index, now) {
+    const height = this.heights[index];
+    const lastHeightTime = this.lastHeightTimes[index];
+    if (height === null || lastHeightTime === null) {
+      return null;
+    }
+
+    const elapsedMs = now - lastHeightTime;
+    if (elapsedMs < 0 || elapsedMs > this.config.trackingGraceMs) {
+      return null;
+    }
+
+    return clamp(height + this.heightVelocities[index] * elapsedMs, 0, 1);
   }
 
   holdOrReset(now, handCount = 0) {
@@ -614,6 +889,8 @@ class ServerGestureInterpreter {
     this.lastCrossAt = -Infinity;
     this.levelEnteredAt = null;
     this.heights = [null, null];
+    this.heightVelocities = [0, 0];
+    this.lastHeightTimes = [null, null];
     return this.emit({
       status: "NEUTRAL",
       handCount,

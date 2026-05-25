@@ -7,6 +7,7 @@ ENV PORT=8787
 ENV NODE_ENV=production
 
 COPY backend ./backend
+COPY frontend ./frontend
 
 EXPOSE 8787
 

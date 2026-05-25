@@ -140,7 +140,7 @@ function trackHands() {
       const telemetry = gestures.process(hands);
       drawHandOverlay(hands);
       statusText.textContent =
-        telemetry.tracking === "bridged" || telemetry.tracking === "hold"
+        telemetry.tracking === "bridged" || telemetry.tracking === "predicted" || telemetry.tracking === "hold"
           ? "Recovering hand tracking."
           : hands.length < 2
             ? "Show both hands."
