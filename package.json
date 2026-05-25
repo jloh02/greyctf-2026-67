@@ -8,6 +8,7 @@
     "start": "node backend/server.js",
     "start:backend": "node backend/server.js",
     "start:frontend": "node frontend/dev-server.js",
-    "check": "node --check backend/server.js && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js"
+    "start:solve": "node solve/server.js",
+    "check": "node --check backend/server.js && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js && node --check solve/server.js && node --check solve/frontend/src/app.js && node --check solve/frontend/src/gesture.js"
   }
 }

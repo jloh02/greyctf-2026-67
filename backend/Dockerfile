@@ -8,6 +8,7 @@ ENV NODE_ENV=production
 
 COPY backend ./backend
 COPY frontend ./frontend
+COPY shared ./shared
 
 EXPOSE 8787
 

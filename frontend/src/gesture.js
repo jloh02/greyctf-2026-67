@@ -313,20 +313,28 @@ export class GestureInterpreter {
 
 export function orderedHands(result) {
   const landmarks = result.landmarks || [];
-  if (landmarks.length < 2) {
-    return landmarks;
+  const handsBySide = [null, null];
+
+  for (const handLandmarks of landmarks) {
+    const anchor = handAnchorPoint(handLandmarks);
+    if (!anchor) {
+      continue;
+    }
+
+    // The preview is mirrored, so larger raw camera x is the player's screen-left hand.
+    const side = screenSideIndex(anchor);
+    const candidate = {
+      landmarks: handLandmarks,
+      anchor,
+      distanceFromSideCenter: Math.abs(anchor.x - (side === 0 ? 0.75 : 0.25)),
+    };
+    const current = handsBySide[side];
+    if (!current || candidate.distanceFromSideCenter < current.distanceFromSideCenter) {
+      handsBySide[side] = candidate;
+    }
   }
 
-  // The preview is mirrored, so larger raw camera x is the player's screen-left hand.
-  const hands = landmarks.map((handLandmarks) => ({
-    landmarks: handLandmarks,
-    anchor: handAnchorPoint(handLandmarks),
-  }));
-
-  return hands
-    .sort((first, second) => (second.anchor?.x || 0) - (first.anchor?.x || 0))
-    .slice(0, 2)
-    .map((hand) => hand.landmarks);
+  return handsBySide.filter(Boolean).map((hand) => hand.landmarks);
 }
 
 export function screenSideIndex(anchor) {

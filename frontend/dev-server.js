@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PUBLIC_ROOT = resolve(__dirname);
+const SHARED_ROOT = resolve(__dirname, "..", "shared");
 const PORT = Number(process.env.FRONTEND_PORT || process.env.PORT || "4173");
 const HOST = process.env.FRONTEND_HOST || process.env.HOST || "127.0.0.1";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
@@ -46,6 +47,34 @@ server.listen(PORT, HOST, () => {
 });
 
 async function serveStatic(pathname, response) {
+  if (pathname.startsWith("/shared/")) {
+    const normalizedSharedPath = normalize(decodeURIComponent(pathname.slice("/shared/".length))).replace(
+      /^(\.\.(\/|\\|$))+/,
+      "",
+    );
+    const sharedAbsolutePath = resolve(join(SHARED_ROOT, normalizedSharedPath));
+    if (!sharedAbsolutePath.startsWith(SHARED_ROOT)) {
+      response.writeHead(403).end("Forbidden");
+      return;
+    }
+    try {
+      const fileStat = await stat(sharedAbsolutePath);
+      if (!fileStat.isFile()) {
+        response.writeHead(404).end("Not found");
+        return;
+      }
+
+      response.writeHead(200, {
+        "content-type": mimeTypes.get(extname(sharedAbsolutePath)) || "application/octet-stream",
+        "cache-control": "no-store",
+      });
+      createReadStream(sharedAbsolutePath).pipe(response);
+    } catch {
+      response.writeHead(404).end("Not found");
+    }
+    return;
+  }
+
   const requestedPath = pathname === "/" ? "/index.html" : decodeURIComponent(pathname);
   if (requestedPath === "/diagnostics.html" && !DIAGNOSTIC_PAGE) {
     response.writeHead(404).end("Not found");

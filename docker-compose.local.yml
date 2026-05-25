@@ -1,0 +1,15 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      NODE_ENV: production
+      DIAGNOSTIC_PAGE: "${DIAGNOSTIC_PAGE:-true}"
+      SPACE_67_KEYBOARD: "${SPACE_67_KEYBOARD:-false}"
+      FLAG: "${FLAG:-grey{placeholder_6767}}"
+    ports:
+      - "8787:8787"
+    restart: unless-stopped

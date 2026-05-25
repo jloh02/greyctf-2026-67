@@ -1,14 +1,23 @@
 import {
   FAST_HAND_LANDMARKER_OPTIONS,
+  GestureInterpreter,
   handAnchorPoint,
   handHeight,
   orderedHands,
   screenSideIndex,
 } from "./gesture.js";
+import {
+  GAME_CONSTANTS,
+  applyFlap as applyCoreFlap,
+  createGameState,
+  stepGameState,
+} from "./game-core.js";
 
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
 const cameraButton = document.querySelector("#cameraButton");
+const cameraFrame = document.querySelector(".camera-frame");
 const restartButton = document.querySelector("#restartButton");
 const video = document.querySelector("#cameraPreview");
 const handOverlay = document.querySelector("#handOverlay");
@@ -48,14 +57,7 @@ let atlasCanvas = null;
 atlas.addEventListener("load", prepareAtlasTransparency);
 atlas.src = "./public/assets/flappy_atlas.png";
 
-let constants = {
-  width: 960,
-  height: 540,
-  birdX: 240,
-  pipeWidth: 74,
-  pipeGap: 168,
-  floorY: 492,
-};
+let constants = { ...GAME_CONSTANTS };
 
 let config = {
   space67Keyboard: false,
@@ -68,9 +70,11 @@ let state = {
   best: 0,
   won: false,
   flag: "",
+  acceptedFlapCount: 0,
   elapsed: 0,
+  spawnTimer: 0,
+  nextPipeId: 1,
   gameOver: false,
-  shadowbanned: false,
   awaitingStart: true,
   gesture: {
     status: "NEUTRAL",
@@ -101,6 +105,17 @@ let syncState = {
 
 const PING_INTERVAL_MS = 2000;
 const SYNC_SMOOTHING = 0.2;
+const MAX_RENDER_DT_SECONDS = 0.05;
+const MAX_AUTHORITY_PROJECTION_MS = 250;
+let lastDrawAt = performance.now();
+let predictedState = createGameState({}, constants);
+let pendingFlaps = [];
+let localFlapSequence = 0;
+let predictedInitialized = false;
+let lastGestureCrossCount = 0;
+const localGesture = new GestureInterpreter({
+  onTelemetry: handleLocalGestureTelemetry,
+});
 
 connect();
 requestAnimationFrame(draw);
@@ -122,10 +137,14 @@ function connect() {
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "welcome") {
-      constants = message.constants;
+      constants = { ...GAME_CONSTANTS, ...(message.constants || {}) };
       config = message.config || config;
       canvas.width = constants.width;
       canvas.height = constants.height;
+      predictedState = createGameState({}, constants);
+      predictedInitialized = false;
+      pendingFlaps = [];
+      localFlapSequence = 0;
       applyInputMode();
       if (!cameraStarting) {
         if (config.space67Keyboard) {
@@ -140,6 +159,7 @@ function connect() {
     }
     if (message.type === "state") {
       state = message.state;
+      reconcilePredictedState(message.serverTime);
       return;
     }
     if (message.type === "pong") {
@@ -233,10 +253,14 @@ function sendSync() {
   );
 }
 
-function sendFlap(source) {
+function sendFlap(source, { predictNow = false } = {}) {
   if (!connected || socket.readyState !== WebSocket.OPEN) {
     statusText.textContent = "Flap ignored while server is offline.";
     return;
+  }
+
+  if (predictNow) {
+    queuePredictedFlap();
   }
 
   socket.send(JSON.stringify({ type: "flap", source, clientTime: Date.now() }));
@@ -255,14 +279,18 @@ function cameraModeEnabled() {
 
 function applyInputMode() {
   cameraButton.disabled = keyboardModeEnabled();
+  cameraButton.hidden = keyboardModeEnabled();
+  cameraFrame.hidden = keyboardModeEnabled();
 
   if (keyboardModeEnabled()) {
     stopCameraTracking();
+    statusText.textContent = connected ? "Keyboard mode active." : "Server offline.";
     mode = connected ? "Keyboard" : "Offline";
     return;
   }
 
   if (!mediaPipeReady && !cameraStarting) {
+    statusText.textContent = "Starting camera tracking.";
     startCamera();
   }
 }
@@ -280,6 +308,8 @@ function stopCameraTracking() {
   leftMeter.value = 0.5;
   rightMeter.value = 0.5;
   gestureStateText.textContent = "NEUTRAL";
+  localGesture.reset();
+  resetPredictionState();
 }
 
 function restartRun() {
@@ -287,6 +317,8 @@ function restartRun() {
   sentHandSamples = 0;
   flapPulseText.textContent = "0 sent";
   state = { ...state, won: false, flag: "" };
+  resetPredictionState();
+  localGesture.reset();
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "restart" }));
   }
@@ -298,20 +330,26 @@ function signalSynthetic67() {
   gestureStateText.textContent = `DEV ${currentState}`;
   leftMeter.value = synthetic67LeftHigh ? 0.82 : 0.24;
   rightMeter.value = synthetic67LeftHigh ? 0.24 : 0.82;
-  sendFlap("gesture");
+  sendFlap("gesture", { predictNow: true });
 }
 
 function draw() {
+  const now = performance.now();
+  const dt = Math.min(MAX_RENDER_DT_SECONDS, Math.max(0, (now - lastDrawAt) / 1000));
+  lastDrawAt = now;
+  advancePredictedState(dt);
+  const sim = currentSimulationState();
+
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, constants.width, constants.height);
-  drawSky();
-  drawPipes();
-  drawFloor();
-  drawBird();
-  drawOverlay();
+  drawSky(sim);
+  drawPipes(sim);
+  drawFloor(sim);
+  drawBird(sim);
+  drawOverlay(sim);
 
-  scoreText.textContent = String(state.score);
-  bestText.textContent = String(state.best);
+  scoreText.textContent = String(sim.score);
+  bestText.textContent = String(Math.max(state.best, sim.score));
   modeText.textContent = mode;
   gestureStateText.textContent = state.gesture?.status || "NEUTRAL";
   updateFlagBanner();
@@ -330,7 +368,7 @@ function updateFlagBanner() {
   flagText.textContent = state.flag || "Flag not configured.";
 }
 
-function drawSky() {
+function drawSky(sim) {
   const gradient = ctx.createLinearGradient(0, 0, 0, constants.floorY);
   gradient.addColorStop(0, "#78dcf6");
   gradient.addColorStop(0.68, "#5dc7e3");
@@ -338,12 +376,12 @@ function drawSky() {
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, constants.width, constants.floorY);
 
-  drawCloud(120 - ((state.elapsed * 18) % 1120), 82, 1.1);
-  drawCloud(560 - ((state.elapsed * 12) % 1120), 148, 0.85);
-  drawCloud(880 - ((state.elapsed * 16) % 1120), 62, 0.7);
+  drawCloud(120 - ((sim.elapsed * 18) % 1120), 82, 1.1);
+  drawCloud(560 - ((sim.elapsed * 12) % 1120), 148, 0.85);
+  drawCloud(880 - ((sim.elapsed * 16) % 1120), 62, 0.7);
 
   ctx.fillStyle = "#8bd05a";
-  for (let x = -80 + ((state.elapsed * 28) % 160); x < constants.width + 120; x += 160) {
+  for (let x = -80 + ((sim.elapsed * 28) % 160); x < constants.width + 120; x += 160) {
     ctx.beginPath();
     ctx.arc(x, constants.floorY - 34, 72, Math.PI, 0);
     ctx.fill();
@@ -351,8 +389,8 @@ function drawSky() {
   }
 }
 
-function drawPipes() {
-  for (const pipe of state.pipes) {
+function drawPipes(sim) {
+  for (const pipe of sim.pipes) {
     const topHeight = pipe.gapY;
     const bottomY = pipe.gapY + constants.pipeGap;
     drawPipe(pipe.x, 0, topHeight, true);
@@ -360,26 +398,36 @@ function drawPipes() {
   }
 }
 
-function drawFloor() {
+function drawFloor(sim) {
   ctx.fillStyle = "#d9a447";
   ctx.fillRect(0, constants.floorY, constants.width, constants.height - constants.floorY);
   ctx.fillStyle = "#f3d269";
   ctx.fillRect(0, constants.floorY, constants.width, 12);
   ctx.fillStyle = "#8b6a2e";
-  for (let x = -32 + ((state.elapsed * 255) % 32); x < constants.width; x += 32) {
+  for (let x = -32 + ((sim.elapsed * constants.pipeSpeed) % 32); x < constants.width; x += 32) {
     ctx.fillRect(x, constants.floorY + 12, 16, 16);
     ctx.fillRect(x + 16, constants.floorY + 28, 16, 16);
   }
 }
 
-function drawBird() {
-  const tilt = clamp(state.velocity / 520, -0.55, 0.8);
+function drawBird(sim) {
+  const tilt = clamp(sim.velocity / 520, -0.55, 0.8);
   ctx.save();
-  ctx.translate(constants.birdX, state.birdY);
+  ctx.translate(constants.birdX, sim.birdY);
   ctx.rotate(tilt);
-  const frame = birdSpriteFrame();
+  const frame = birdSpriteFrame(sim);
   if (atlas.complete && atlas.naturalWidth > 0) {
-    ctx.drawImage(spriteSource(), BIRD_SPRITE_START_X + frame * SPRITE_SIZE, 0, SPRITE_SIZE, SPRITE_SIZE, -28, -28, 56, 56);
+    ctx.drawImage(
+      spriteSource(),
+      BIRD_SPRITE_START_X + frame * SPRITE_SIZE + 0.5,
+      0.5,
+      SPRITE_SIZE - 1,
+      SPRITE_SIZE - 1,
+      -28,
+      -28,
+      56,
+      56,
+    );
   } else {
     ctx.fillStyle = "#f2d047";
     ctx.beginPath();
@@ -389,12 +437,12 @@ function drawBird() {
   ctx.restore();
 }
 
-function birdSpriteFrame() {
-  if (state.gameOver) {
+function birdSpriteFrame(sim) {
+  if (sim.gameOver && sim.velocity >= -20) {
     return BIRD_FRAMES.neutral;
   }
 
-  if (state.velocity < 0) {
+  if (sim.velocity < 0) {
     return BIRD_FRAMES.down;
   }
   return BIRD_FRAMES.up;
@@ -452,6 +500,7 @@ function prepareAtlasTransparency() {
   prepared.width = atlas.naturalWidth;
   prepared.height = atlas.naturalHeight;
   const preparedCtx = prepared.getContext("2d", { willReadFrequently: true });
+  preparedCtx.imageSmoothingEnabled = false;
   preparedCtx.drawImage(atlas, 0, 0);
 
   const image = preparedCtx.getImageData(0, 0, prepared.width, prepared.height);
@@ -511,14 +560,14 @@ function drawCloud(x, y, scale) {
   ctx.restore();
 }
 
-function drawOverlay() {
-  if (state.awaitingStart) {
+function drawOverlay(sim) {
+  if (sim.awaitingStart) {
     drawMessage("Ready", readySubtitle());
     return;
   }
 
-  if (state.gameOver) {
-    drawMessage("Grounded", state.shadowbanned ? "Input rejected." : "Press Restart or flap again.");
+  if (sim.gameOver) {
+    drawMessage("Grounded", "Press Restart or flap again.");
   }
 }
 
@@ -607,13 +656,15 @@ function trackHands() {
   if (mediaPipeReady && handLandmarker && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
     if (video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
-      const result = handLandmarker.detectForVideo(video, performance.now());
+      const now = performance.now();
+      const result = handLandmarker.detectForVideo(video, now);
       const hands = orderedHands(result);
+      localGesture.process(hands, now);
       const sample = handSample(hands);
       sendHandSample(sample);
       updateHandMeters(sample);
       drawHandOverlay(hands);
-      if (!result.landmarks || result.landmarks.length < 2) {
+      if (hands.length < 2) {
         statusText.textContent = "Show both hands.";
       } else {
         statusText.textContent = "Camera tracking active.";
@@ -773,6 +824,134 @@ function drawSideBracket(ctx, centerX, top, bottom, color, direction) {
   ctx.lineWidth = 2;
   ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
   ctx.stroke();
+}
+
+function handleLocalGestureTelemetry(telemetry) {
+  const crossCount = telemetry.crossCount || 0;
+  const hadPendingCross = lastGestureCrossCount > 0;
+  if (
+    !keyboardModeEnabled() &&
+    crossCount > 0 &&
+    lastGestureCrossCount === 0 &&
+    telemetry.currentState !== "LEVEL" &&
+    telemetry.jumpDebounceRemainingMs <= 0
+  ) {
+    queuePredictedFlap({ confirmed: false });
+  }
+  if (telemetry.triggered) {
+    confirmPendingGestureFlap();
+  } else if (hadPendingCross && crossCount === 0 && telemetry.currentState !== "LEVEL") {
+    cancelTentativeGestureFlap();
+  }
+  lastGestureCrossCount = telemetry.triggered ? 0 : crossCount;
+}
+
+function queuePredictedFlap({ confirmed = true } = {}) {
+  ensurePredictedState();
+  const sequence = ++localFlapSequence;
+  pendingFlaps.push({
+    sequence,
+    elapsed: predictedState.elapsed,
+    confirmed,
+  });
+  applyCoreFlap(predictedState, constants);
+}
+
+function confirmPendingGestureFlap() {
+  const pending = pendingFlaps.find((flap) => !flap.confirmed);
+  if (pending) {
+    pending.confirmed = true;
+  }
+}
+
+function cancelTentativeGestureFlap() {
+  const index = pendingFlaps.findIndex((flap) => !flap.confirmed);
+  if (index === -1) {
+    return;
+  }
+  pendingFlaps.splice(index, 1);
+  predictedInitialized = false;
+  ensurePredictedState();
+  reconcilePredictedState();
+}
+
+function resetPredictionState() {
+  predictedInitialized = false;
+  predictedState = createGameState({}, constants);
+  pendingFlaps = [];
+  localFlapSequence = 0;
+  lastGestureCrossCount = 0;
+}
+
+function ensurePredictedState() {
+  if (!predictedInitialized) {
+    predictedState = simulationStateFromAuthority(state);
+    predictedInitialized = true;
+  }
+}
+
+function simulationStateFromAuthority(authority) {
+  return createGameState(
+    {
+      birdY: authority.birdY,
+      velocity: authority.velocity,
+      score: authority.score,
+      elapsed: authority.elapsed,
+      spawnTimer: authority.spawnTimer,
+      gameOver: authority.gameOver,
+      awaitingStart: authority.awaitingStart,
+      nextPipeId: authority.nextPipeId,
+      pipes: authority.pipes || [],
+    },
+    constants,
+  );
+}
+
+function estimateAuthorityProjectionSeconds(serverTime) {
+  if (!Number.isFinite(serverTime)) {
+    return clamp(syncState.rttMs / 2000, 0, MAX_AUTHORITY_PROJECTION_MS / 1000);
+  }
+
+  const estimatedServerNow = Date.now() + syncState.clockOffsetMs;
+  const ageMs = clamp(estimatedServerNow - serverTime, 0, MAX_AUTHORITY_PROJECTION_MS);
+  return ageMs / 1000;
+}
+
+function reconcilePredictedState(serverTime) {
+  if (state.acceptedFlapCount === 0 && state.awaitingStart) {
+    pendingFlaps = [];
+    localFlapSequence = 0;
+  }
+
+  pendingFlaps = pendingFlaps.filter((flap) => flap.sequence > state.acceptedFlapCount);
+  predictedState = simulationStateFromAuthority(state);
+  predictedInitialized = true;
+  const targetElapsed = predictedState.elapsed + estimateAuthorityProjectionSeconds(serverTime);
+
+  for (const flap of pendingFlaps) {
+    const flapElapsed = Math.max(predictedState.elapsed, flap.elapsed);
+    if (flapElapsed > predictedState.elapsed) {
+      stepGameState(predictedState, flapElapsed - predictedState.elapsed, constants);
+    }
+    if (predictedState.gameOver) {
+      break;
+    }
+    applyCoreFlap(predictedState, constants);
+  }
+
+  if (!predictedState.gameOver && targetElapsed > predictedState.elapsed) {
+    stepGameState(predictedState, targetElapsed - predictedState.elapsed, constants);
+  }
+}
+
+function advancePredictedState(dt) {
+  ensurePredictedState();
+  stepGameState(predictedState, dt, constants);
+}
+
+function currentSimulationState() {
+  ensurePredictedState();
+  return predictedState;
 }
 
 function resizeHandOverlay() {
