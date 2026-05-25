@@ -40,7 +40,7 @@ pnpm simulate:trace
 node scripts/simulate-hands.mjs trace /path/to/67-trace.json
 ```
 
-After replay, the CLI sends `finish` with `SIMULATE_CLAIMED_SCORE` (default `75` for sussy/trace, `55` for human) so the server replays the session log when the claim is above `VERIFY_SCORE_THRESHOLD` (50).
+After replay, the CLI sends `finish` with `SIMULATE_CLAIMED_SCORE` (default `WIN_SCORE` / 67 from `shared/game-core.js`) so the server replays the session log when the claim is above `VERIFY_SCORE_THRESHOLD` (50).
 
 ## Backend alignment
 

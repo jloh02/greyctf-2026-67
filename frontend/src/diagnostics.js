@@ -1,8 +1,3 @@
-/**
- * Gesture diagnostics page — local MediaPipe visualization only.
- * Streams `hands` to the server for logging; does not drive game physics.
- * Anti-cheat / flap acceptance is visible only via legacy `state` messages when CLIENT_SIM=false.
- */
 import {
   DEFAULT_GESTURE_CONFIG,
   FAST_HAND_LANDMARKER_OPTIONS,

@@ -321,7 +321,6 @@ export function orderedHands(result) {
       continue;
     }
 
-    // The preview is mirrored, so larger raw camera x is the player's screen-left hand.
     const side = screenSideIndex(anchor);
     const candidate = {
       landmarks: handLandmarks,

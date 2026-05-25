@@ -220,7 +220,7 @@ The live game no longer reconciles client prediction against 30 FPS server state
 * **Client:** Runs `shared/game-core.js` locally at display rate. MediaPipe stays in the browser; camera mode streams `hands` samples, keyboard mode sends explicit `flap` messages. Physics, collisions, and score are immediate on the client.
 * **Server (default `CLIENT_SIM=true`):** Does not tick physics during play. Appends each `restart`, `hands`, and `flap` message to a per-session input log with `atMs` offsets.
 * **Finish:** When the client reports game over with **claimed score > 50**, it sends `{ type: "finish", score }`. The server replays the log through the same physics + `ServerGestureInterpreter` + anti-cheat pipeline used for live authority.
-* **Flag:** Awarded when replayed score **≥ 67** and matches the claim (`winScore` in `shared/game-core.js`).
+* **Flag:** Awarded when replayed score **≥ `WIN_SCORE`** (67 in `shared/game-core.js`) and matches the claim.
 * **Anti-cheat:** Heuristics (cadence, gesture leadup, amplitude/velocity traps) run only while score **> 50** during replay or legacy live mode.
 * **Legacy mode:** `CLIENT_SIM=false` restores server-authoritative 60 TPS simulation and 30 FPS `state` broadcasts for debugging.
 

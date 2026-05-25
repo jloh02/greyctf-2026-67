@@ -8,6 +8,7 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { WIN_SCORE } from "../shared/game-core.js";
 
 const mode = process.argv[2] || "sussy";
 const targetUrl =
@@ -127,7 +128,7 @@ function createSocketMetrics() {
       if (message.type === "verified") {
         lastVerified = message;
         console.log(
-          `VERIFIED valid=${message.valid} verified=${message.verified} score=${message.score} claimed=${message.claimedScore} won=${message.won} message=${message.message || ""}`,
+          `VERIFIED valid=${message.valid} verified=${message.verified} score=${message.score} claimed=${message.claimedScore} won=${message.won} message=${message.message || ""}${message.hint ? ` hint=${message.hint}` : ""}`,
         );
         const antiCheat = message.antiCheat;
         if (antiCheat?.message) {
@@ -277,7 +278,7 @@ async function main() {
     const welcome = await waitForWelcome(socket);
     console.log(`Connected as ${welcome.id}`);
     await replayTrace(trace, socket);
-    const claimedScore = Number(process.env.SIMULATE_CLAIMED_SCORE || "75");
+    const claimedScore = Number(process.env.SIMULATE_CLAIMED_SCORE || String(WIN_SCORE));
     const verified = await submitFinish(socket, claimedScore);
     console.log(
       `Trace replay finished. acceptedFlaps=${metrics.getAcceptedFlaps()} verified=${verified ? verified.valid : "timeout"}`,
@@ -295,7 +296,7 @@ async function main() {
   const welcome = await waitForWelcome(socket);
   console.log(`Connected as ${welcome.id}`);
   await runSynthetic(mode, socket, runMs);
-  const claimedScore = Number(process.env.SIMULATE_CLAIMED_SCORE || (mode === "sussy" ? "75" : "55"));
+  const claimedScore = Number(process.env.SIMULATE_CLAIMED_SCORE || String(WIN_SCORE));
   const verified = await submitFinish(socket, claimedScore);
   console.log(
     `Simulation finished. acceptedFlaps=${metrics.getAcceptedFlaps()} verified=${verified ? verified.valid : "timeout"}`,

@@ -1,10 +1,3 @@
-/**
- * Main game client — local physics via shared/game-core.js.
- *
- * WebSocket traffic records inputs for the server (`hands`, `flap`, `restart`).
- * When a run ends with score > verifyScoreThreshold (default 50), sends `finish`
- * and applies the server's `verified` response (authoritative score + flag).
- */
 import {
   FAST_HAND_LANDMARKER_OPTIONS,
   GestureInterpreter,
@@ -15,10 +8,11 @@ import {
 } from "./gesture.js";
 import {
   GAME_CONSTANTS,
+  WIN_SCORE,
   applyFlap as applyCoreFlap,
   createGameState,
   stepGameState,
-} from "./game-core.js";
+} from "/shared/game-core.js";
 
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
@@ -72,6 +66,7 @@ let config = {
   space67Keyboard: false,
   antiCheatEnabled: true,
   clientSim: true,
+  winScore: WIN_SCORE,
   verifyScoreThreshold: 50,
 };
 
@@ -473,6 +468,22 @@ function applyLocalFlap() {
   applyCoreFlap(gameState, constants);
 }
 
+function targetWinScore() {
+  return constants.winScore ?? config.winScore ?? WIN_SCORE;
+}
+
+function verifyScoreThreshold() {
+  return config.verifyScoreThreshold ?? 50;
+}
+
+function scoreNeedsVerification(score) {
+  return config.clientSim && score > verifyScoreThreshold();
+}
+
+function hasReachedWinScore(score) {
+  return score >= targetWinScore();
+}
+
 function checkRunFinished() {
   if (!gameState.gameOver || finishSubmitted) {
     return;
@@ -481,11 +492,11 @@ function checkRunFinished() {
   finishSubmitted = true;
   sessionMeta.best = Math.max(sessionMeta.best, gameState.score);
 
-  if (gameState.score >= constants.winScore) {
+  if (hasReachedWinScore(gameState.score)) {
     sessionMeta.won = true;
   }
 
-  if (!config.clientSim || gameState.score <= config.verifyScoreThreshold) {
+  if (!scoreNeedsVerification(gameState.score)) {
     return;
   }
 
@@ -602,8 +613,6 @@ function drawPipe(x, y, height, inverted) {
     const sprites = spriteSource();
     const bodyHeight = Math.max(0, bodyEndY - bodyStartY);
     if (bodyHeight > 0) {
-      // Use a center crop from the atlas body tile so the shaft stays seamless
-      // instead of repeating the rim detail baked into the full 16x16 sprite.
       ctx.drawImage(
         sprites,
         PIPE_SPRITES.body.x + 3,
@@ -713,10 +722,9 @@ function drawOverlay(sim) {
   }
 
   if (sim.gameOver) {
-    const subtitle =
-      sim.score > config.verifyScoreThreshold && config.clientSim
-        ? "Run submitted for verification. Press Restart to play again."
-        : "Press Restart or flap again.";
+    const subtitle = scoreNeedsVerification(sim.score)
+      ? "Run submitted for verification. Press Restart to play again."
+      : "Press Restart or flap again.";
     drawMessage("Grounded", subtitle);
   }
 }

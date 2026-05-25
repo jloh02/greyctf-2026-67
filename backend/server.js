@@ -6,9 +6,9 @@
  * broadcast live state. When a run ends with score > VERIFY_SCORE_THRESHOLD (50),
  * the client sends `{ type: "finish", score }` and the server replays the log through
  * shared/game-core.js plus gesture + anti-cheat heuristics. The flag is granted when
- * replay score >= winScore (67) and the claim matches.
+ * replay score >= WIN_SCORE and the claim matches.
  *
- * Anti-cheat heuristics run only while replay/live score is > 50.
+ * Anti-cheat heuristics run only while replay/live score is above VERIFY_SCORE_THRESHOLD.
  *
  * Set CLIENT_SIM=false to restore the older server-authoritative loop (60 TPS sim,
  * 30 FPS state snapshots) for debugging or tooling.
@@ -20,6 +20,7 @@ import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import {
   GAME_CONSTANTS,
+  WIN_SCORE,
   applyFlap as applyCoreFlap,
   createGameState,
   stepGameState,
@@ -58,10 +59,10 @@ const MAX_LAG_COMPENSATION_MS = 200;
 const MAX_GESTURE_REPLAY_MS = 420;
 const HISTORY_CAPACITY = 16;
 const HAND_SAMPLE_HISTORY_CAPACITY = 96;
-const WIN_SCORE = GAME_CONSTANTS.winScore; // 67 — flag threshold
 const CLIENT_SIM = parseBoolean(process.env.CLIENT_SIM, true);
 // Runs with claimed score above this value are replay-verified on `finish`.
 const VERIFY_SCORE_THRESHOLD = Number(process.env.VERIFY_SCORE_THRESHOLD || "50");
+const FLAG_SCORE_HINT = `psss... hearsay the score you need to hit is ${WIN_SCORE}!`;
 const GESTURE_CONFIG = {
   crossThreshold: 0.1,
   minCrossesPerFlap: 2,
@@ -127,6 +128,7 @@ const server = createServer(async (request, response) => {
         antiCheatEnabled: !DISABLE_ANTI_CHEAT,
         diagnosticPage: DIAGNOSTIC_PAGE,
         clientSim: CLIENT_SIM,
+        winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
       }),
     );
@@ -233,6 +235,7 @@ server.listen(PORT, HOST, () => {
   console.log(`SPACE_67_KEYBOARD=${SPACE_67_KEYBOARD}`);
   console.log(`DISABLE_ANTI_CHEAT=${DISABLE_ANTI_CHEAT}`);
   console.log(`CLIENT_SIM=${CLIENT_SIM}`);
+  console.log(`WIN_SCORE=${WIN_SCORE}`);
   console.log(`VERIFY_SCORE_THRESHOLD=${VERIFY_SCORE_THRESHOLD}`);
   console.log(`DIAGNOSTIC_PAGE=${DIAGNOSTIC_PAGE}${DIAGNOSTIC_PAGE ? " (/diagnostics enabled)" : ""}`);
 });
@@ -275,6 +278,7 @@ class GameSocket {
         space67Keyboard: SPACE_67_KEYBOARD,
         antiCheatEnabled: !DISABLE_ANTI_CHEAT,
         clientSim: CLIENT_SIM,
+        winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
         gesture: GESTURE_CONFIG,
       },
@@ -440,6 +444,7 @@ class GameSocket {
       won: result.won,
       flag: result.flag,
       message: result.message,
+      hint: FLAG_SCORE_HINT,
       antiCheat: result.antiCheat,
     });
   }
@@ -1512,3 +1517,4 @@ function parseBoolean(value, fallback) {
   }
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
+

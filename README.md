@@ -36,8 +36,8 @@ The browser runs the game simulation locally (`shared/game-core.js`) for respons
 **Scoring**
 
 - Pipe score is shown live on the client.
-- **Flag threshold:** 67 (`winScore` in `shared/game-core.js`).
-- **Verification threshold:** 51+ (scores strictly above 50). Anti-cheat heuristics apply only while replay/live score is above 50.
+- **Flag threshold:** `WIN_SCORE` (67) from `shared/game-core.js` — also sent as `constants.winScore` / `config.winScore` in `welcome`.
+- **Verification threshold:** scores strictly above `VERIFY_SCORE_THRESHOLD` (default 50). Anti-cheat heuristics apply only above that threshold during replay/live play.
 
 **WebSocket messages (client → server)**
 
@@ -48,7 +48,7 @@ The browser runs the game simulation locally (`shared/game-core.js`) for respons
 
 **WebSocket messages (server → client)**
 
-- `welcome` — constants, config flags, session best score.
+- `welcome` — `constants` (includes `winScore`), `config.winScore`, `config.verifyScoreThreshold`, session best score.
 - `verified` — replay outcome, flag (if won), anti-cheat summary.
 
 Set `CLIENT_SIM=false` on the backend to restore the older server-authoritative mode (live 60 TPS sim + 30 FPS state snapshots) for debugging.
