@@ -5,10 +5,13 @@
   "type": "module",
   "packageManager": "pnpm@10.30.3",
   "scripts": {
-    "start": "node backend/server.js",
-    "start:backend": "node backend/server.js",
+    "start": "DIAGNOSTIC_PAGE=true node backend/server.js",
+    "start:backend": "DIAGNOSTIC_PAGE=true node backend/server.js",
     "start:frontend": "node frontend/dev-server.js",
     "start:solve": "node solve/server.js",
-    "check": "node --check backend/server.js && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js && node --check solve/server.js && node --check solve/frontend/src/app.js && node --check solve/frontend/src/gesture.js"
+    "simulate:sussy": "node scripts/simulate-hands.mjs sussy",
+    "simulate:human": "node scripts/simulate-hands.mjs human",
+    "simulate:trace": "node scripts/simulate-hands.mjs trace scripts/fixtures/human-trace.json",
+    "check": "node --check backend/server.js && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js && node --check solve/server.js && node --check solve/frontend/src/app.js && node --check solve/frontend/src/gesture.js && node --check scripts/simulate-hands.mjs"
   }
 }

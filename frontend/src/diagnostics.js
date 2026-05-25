@@ -1,3 +1,8 @@
+/**
+ * Gesture diagnostics page — local MediaPipe visualization only.
+ * Streams `hands` to the server for logging; does not drive game physics.
+ * Anti-cheat / flap acceptance is visible only via legacy `state` messages when CLIENT_SIM=false.
+ */
 import {
   DEFAULT_GESTURE_CONFIG,
   FAST_HAND_LANDMARKER_OPTIONS,
@@ -19,6 +24,7 @@ const stateText = document.querySelector("#diagnosticState");
 const deltaText = document.querySelector("#diagnosticDelta");
 const crossesText = document.querySelector("#diagnosticCrosses");
 const jumpsText = document.querySelector("#diagnosticJumps");
+const serverFlapsText = document.querySelector("#diagnosticServerFlaps");
 const thresholdControl = document.querySelector("#thresholdControl");
 const thresholdValue = document.querySelector("#thresholdValue");
 const crossesControl = document.querySelector("#crossesControl");
@@ -43,6 +49,9 @@ let jumpCount = 0;
 let lastJumpAt = 0;
 let samples = [];
 let jumpEvents = [];
+let socket = null;
+let connected = false;
+let serverFlapCount = 0;
 
 const gestures = new GestureInterpreter({
   onFlap: recordJump,
@@ -54,6 +63,7 @@ crossesControl.value = String(DEFAULT_GESTURE_CONFIG.minCrossesPerFlap);
 smoothingControl.value = String(DEFAULT_GESTURE_CONFIG.anchorSmoothing);
 
 init();
+connectServer();
 requestAnimationFrame(drawGraph);
 
 function init() {
@@ -68,6 +78,57 @@ function bindControls() {
   thresholdControl.addEventListener("input", applyControlValues);
   crossesControl.addEventListener("input", applyControlValues);
   smoothingControl.addEventListener("input", applyControlValues);
+}
+
+function backendWebSocketUrl() {
+  const configured = new URLSearchParams(window.location.search).get("backend");
+  if (configured) {
+    const base = configured
+      .replace(/^http:/, "ws:")
+      .replace(/^https:/, "wss:")
+      .replace(/\/$/, "")
+      .replace(/\/ws$/, "");
+    return `${base}/ws`;
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/ws`;
+}
+
+function connectServer() {
+  if (socket) {
+    socket.close();
+  }
+
+  socket = new WebSocket(backendWebSocketUrl());
+
+  socket.addEventListener("open", () => {
+    connected = true;
+    statusText.textContent = mediaPipeReady
+      ? "Camera tracking active. Server connected."
+      : "Server connected. Start Camera to stream hand samples.";
+  });
+
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === "state") {
+      serverFlapCount = message.state.acceptedFlapCount ?? 0;
+      serverFlapsText.textContent = String(serverFlapCount);
+    }
+  });
+
+  socket.addEventListener("close", (event) => {
+    connected = false;
+    const reason = typeof event.reason === "string" ? event.reason.trim() : "";
+    statusText.textContent = reason
+      ? `Server disconnected: ${reason}`
+      : "Server disconnected. Refresh to reconnect.";
+  });
+
+  socket.addEventListener("error", () => {
+    connected = false;
+    statusText.textContent = "Server connection failed.";
+  });
 }
 
 function applyControlValues() {
@@ -120,7 +181,9 @@ async function startCamera() {
     await video.play();
     mediaPipeReady = true;
     cameraStarting = false;
-    statusText.textContent = "Camera tracking active.";
+    statusText.textContent = connected
+      ? "Camera tracking active. Streaming hand samples to server."
+      : "Camera active. Waiting for server connection.";
     stateText.textContent = "TRACKING";
     requestAnimationFrame(trackHands);
   } catch (error) {
@@ -137,17 +200,58 @@ function trackHands() {
       lastVideoTime = video.currentTime;
       const result = handLandmarker.detectForVideo(video, performance.now());
       const hands = orderedHands(result);
-      const telemetry = gestures.process(hands);
+      gestures.process(hands);
+      const sample = handSample(hands);
+      sendHandSample(sample);
       drawHandOverlay(hands);
-      statusText.textContent =
-        telemetry.tracking === "bridged" || telemetry.tracking === "predicted" || telemetry.tracking === "hold"
-          ? "Recovering hand tracking."
-          : hands.length < 2
-            ? "Show both hands."
-            : "Camera tracking active.";
+      statusText.textContent = !connected
+        ? "Camera active. Server offline — flap counts unavailable."
+        : sample.handCount < 2
+          ? "Show both hands. Null Y frames are normal during dropouts."
+          : "Camera tracking active. Streaming hand samples to server.";
     }
   }
   requestAnimationFrame(trackHands);
+}
+
+function handSample(hands) {
+  const sample = {
+    leftY: null,
+    rightY: null,
+    handCount: Math.min(hands.length, 2),
+  };
+
+  hands.slice(0, 2).forEach((hand, index) => {
+    const anchor = handAnchorPoint(hand);
+    if (!anchor) {
+      return;
+    }
+
+    const side = hands.length >= 2 ? index : screenSideIndex(anchor);
+    if (side === 0) {
+      sample.leftY = anchor.y;
+    } else {
+      sample.rightY = anchor.y;
+    }
+  });
+
+  return sample;
+}
+
+function sendHandSample(sample) {
+  if (!connected || !socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(
+    JSON.stringify({
+      type: "hands",
+      leftY: sample.leftY,
+      rightY: sample.rightY,
+      handCount: sample.handCount,
+      clientTime: Date.now(),
+    }),
+  );
 }
 
 function recordTelemetry(telemetry) {
@@ -250,7 +354,6 @@ function drawGraphBackground(width, height) {
 
 function drawDeltaThreshold(width, height) {
   const threshold = Number(thresholdControl.value);
-  const center = height / 2;
   const top = deltaToY(threshold, height);
   const bottom = deltaToY(-threshold, height);
   graphCtx.fillStyle = "rgba(246, 196, 83, 0.18)";
@@ -262,8 +365,8 @@ function drawDeltaThreshold(width, height) {
   graphCtx.lineTo(width, top);
   graphCtx.moveTo(0, bottom);
   graphCtx.lineTo(width, bottom);
-  graphCtx.moveTo(0, center);
-  graphCtx.lineTo(width, center);
+  graphCtx.moveTo(0, height / 2);
+  graphCtx.lineTo(width, height / 2);
   graphCtx.stroke();
   graphCtx.setLineDash([]);
 }
@@ -347,12 +450,13 @@ function drawHandOverlay(hands) {
   overlayCtx.clearRect(0, 0, overlaySize.width, overlaySize.height);
   drawHandSideGuide(overlayCtx, overlaySize);
 
-  hands.slice(0, 2).forEach((hand) => {
+  hands.slice(0, 2).forEach((hand, index) => {
     const anchor = handAnchorPoint(hand);
     if (!anchor) {
       return;
     }
-    const style = HAND_OVERLAY_STYLES[screenSideIndex(anchor)] || HAND_OVERLAY_STYLES[0];
+    const side = hands.length >= 2 ? index : screenSideIndex(anchor);
+    const style = HAND_OVERLAY_STYLES[side] || HAND_OVERLAY_STYLES[0];
     const anchorPoint = landmarkToPreviewPoint(anchor, overlaySize);
 
     overlayCtx.save();

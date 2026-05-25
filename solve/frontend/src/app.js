@@ -8,6 +8,8 @@ import {
 
 const TRACE_STORAGE_KEY = "solve-lab:last-trace";
 const MAX_LOG_EVENTS = 120;
+const TRACE_MIN_HAND_SAMPLES = 30;
+const TRACE_MIN_DURATION_MS = 1500;
 const PING_INTERVAL_MS = 2000;
 const SYNC_SMOOTHING = 0.2;
 const HAND_ANCHOR_MARKER_RADIUS = 12;
@@ -190,7 +192,8 @@ function connectGameSocket() {
         } else if (mediaPipeReady) {
           statusText.textContent = "Camera tracking active through proxy.";
         } else {
-          statusText.textContent = "Ready to start camera tracking.";
+          statusText.textContent = "Starting camera for trace recording.";
+          startCamera();
         }
       }
       return;
@@ -368,6 +371,16 @@ function maybeFinalizeRecording() {
   }
 
   if (state.gameOver || state.won) {
+    if (!isRecordingWorthSaving(currentRecording)) {
+      const handSamples = countHandSamples(currentRecording);
+      statusText.textContent =
+        `Run too short to save (${handSamples} hand samples). ` +
+        "Play a little longer — brief tracking dropouts in the trace are fine.";
+      currentRecording = createEmptyTrace();
+      restoreTraceState();
+      return;
+    }
+
     currentRecording.completedAt = new Date().toISOString();
     currentRecording.result = state.won ? "won" : "game-over";
     currentRecording.score = state.score;
@@ -375,7 +388,83 @@ function maybeFinalizeRecording() {
     saveTrace(trace);
     currentRecording = createEmptyTrace();
     restoreTraceState();
+    statusText.textContent = `Saved trace with ${trace.events.length} events. You can export or replay it.`;
   }
+}
+
+function countHandSamples(recording) {
+  if (!recording?.events) {
+    return 0;
+  }
+
+  return recording.events.filter((event) => event.message.type === "hands").length;
+}
+
+function countDualHandSamples(recording) {
+  if (!recording?.events) {
+    return 0;
+  }
+
+  return recording.events.filter(
+    (event) =>
+      event.message.type === "hands" &&
+      Number.isFinite(event.message.leftY) &&
+      Number.isFinite(event.message.rightY),
+  ).length;
+}
+
+function summarizeRecording(recording) {
+  if (!recording?.events?.length) {
+    return null;
+  }
+
+  return {
+    handSamples: countHandSamples(recording),
+    dualHands: countDualHandSamples(recording),
+    durationMs: recording.events.at(-1)?.atMs || 0,
+    flaps: recording.flaps || countTraceType(recording, "flap"),
+    events: recording.events.length,
+  };
+}
+
+function isRecordingWorthSaving(recording) {
+  const summary = summarizeRecording(recording);
+  if (!summary) {
+    return false;
+  }
+
+  if (summary.flaps > 0) {
+    return true;
+  }
+
+  return summary.handSamples >= TRACE_MIN_HAND_SAMPLES && summary.durationMs >= TRACE_MIN_DURATION_MS;
+}
+
+function traceForExport() {
+  const live = currentRecording.events.length > 0 ? snapshotRecording(currentRecording, "exported-live") : null;
+  const saved = trace?.events?.length ? trace : null;
+
+  if (live && isRecordingWorthSaving(currentRecording)) {
+    return live;
+  }
+
+  if (saved) {
+    return saved;
+  }
+
+  if (live) {
+    return live;
+  }
+
+  return null;
+}
+
+function snapshotRecording(recording, result = recording.result) {
+  return {
+    ...recording,
+    completedAt: recording.completedAt || new Date().toISOString(),
+    result,
+  };
 }
 
 function createEmptyTrace() {
@@ -394,22 +483,36 @@ function createEmptyTrace() {
 }
 
 function restoreTraceState() {
+  if (trace && !isRecordingWorthSaving(trace)) {
+    trace = null;
+    window.localStorage.removeItem(TRACE_STORAGE_KEY);
+  }
+
   traceStateText.textContent = trace ? `${trace.events.length} events` : "none";
   updateTraceSummary(trace);
 }
 
-function updateTraceSummary(activeTrace) {
+function updateTraceSummary(activeTrace, { live = false } = {}) {
   if (!activeTrace || activeTrace.events.length === 0) {
-    traceSummaryText.textContent = "No trace loaded.";
+    if (!live && currentRecording.events.length > 0) {
+      updateTraceSummary(currentRecording, { live: true });
+      return;
+    }
+
+    traceSummaryText.textContent =
+      "No trace yet. Camera records every hand frame — brief null leftY/rightY dropouts are normal.";
     traceStateText.textContent = "none";
     return;
   }
 
   traceStateText.textContent = `${activeTrace.events.length} events`;
   const durationMs = activeTrace.events.at(-1)?.atMs || 0;
+  const summary = summarizeRecording(activeTrace);
+  const prefix = live ? "Recording now: " : "Saved trace: ";
   traceSummaryText.textContent =
-    `${activeTrace.handSamples || countTraceType(activeTrace, "hands")} hands, ` +
-    `${activeTrace.flaps || countTraceType(activeTrace, "flap")} flaps, ` +
+    `${prefix}` +
+    `${summary.handSamples} hand samples (${summary.dualHands} with both Y), ` +
+    `${summary.flaps} flaps, ` +
     `${(durationMs / 1000).toFixed(2)}s, ` +
     `score ${activeTrace.score ?? 0}, ` +
     `${activeTrace.result || "saved"}`;
@@ -433,6 +536,11 @@ function loadTrace() {
 }
 
 function saveTrace(nextTrace) {
+  if (!nextTrace) {
+    window.localStorage.removeItem(TRACE_STORAGE_KEY);
+    return;
+  }
+
   window.localStorage.setItem(TRACE_STORAGE_KEY, JSON.stringify(nextTrace));
 }
 
@@ -713,9 +821,9 @@ async function startCamera() {
 
     video.srcObject = await navigator.mediaDevices.getUserMedia({
       video: {
-        width: { ideal: 960 },
-        height: { ideal: 540 },
-        frameRate: { ideal: 60 },
+        width: { ideal: 640 },
+        height: { ideal: 360 },
+        frameRate: { ideal: 30 },
         facingMode: "user",
       },
       audio: false,
@@ -762,7 +870,7 @@ function trackHands() {
       sendHandSample(sample, { record: true });
       updateHandMeters(sample);
       drawHandOverlay(hands);
-      if (!result.landmarks || result.landmarks.length < 2) {
+      if (hands.length < 2) {
         statusText.textContent = "Show both hands.";
       } else {
         statusText.textContent = "Camera tracking active through proxy.";
@@ -829,43 +937,66 @@ function drawHandOverlay(hands) {
   handCtx.clearRect(0, 0, overlaySize.width, overlaySize.height);
   drawHandSideGuide(handCtx, overlaySize);
 
-  hands.slice(0, 2).forEach((hand) => {
+  hands.slice(0, 2).forEach((hand, index) => {
     const anchor = handAnchorPoint(hand);
     if (!anchor) {
       return;
     }
-    const style = HAND_OVERLAY_STYLES[screenSideIndex(anchor)] || HAND_OVERLAY_STYLES[0];
-    const anchorPoint = landmarkToPreviewPoint(anchor, overlaySize);
-
-    handCtx.save();
-    handCtx.shadowColor = "rgba(0, 0, 0, 0.72)";
-    handCtx.shadowBlur = 5;
-
-    handCtx.beginPath();
-    handCtx.arc(anchorPoint.x, anchorPoint.y, HAND_ANCHOR_MARKER_RADIUS, 0, Math.PI * 2);
-    handCtx.fillStyle = style.anchor;
-    handCtx.fill();
-    handCtx.lineWidth = 3;
-    handCtx.strokeStyle = "#ffffff";
-    handCtx.stroke();
-
-    handCtx.beginPath();
-    handCtx.moveTo(anchorPoint.x - HAND_ANCHOR_MARKER_RADIUS - 8, anchorPoint.y);
-    handCtx.lineTo(anchorPoint.x + HAND_ANCHOR_MARKER_RADIUS + 8, anchorPoint.y);
-    handCtx.moveTo(anchorPoint.x, anchorPoint.y - HAND_ANCHOR_MARKER_RADIUS - 8);
-    handCtx.lineTo(anchorPoint.x, anchorPoint.y + HAND_ANCHOR_MARKER_RADIUS + 8);
-    handCtx.lineWidth = 3;
-    handCtx.strokeStyle = style.anchor;
-    handCtx.stroke();
-
-    handCtx.beginPath();
-    handCtx.arc(anchorPoint.x, anchorPoint.y, HAND_ANCHOR_MARKER_RADIUS + 10, 0, Math.PI * 2);
-    handCtx.lineWidth = 2;
-    handCtx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-    handCtx.stroke();
-
-    handCtx.restore();
+    const side = hands.length >= 2 ? index : screenSideIndex(anchor);
+    drawHandAnchorMarker(anchor, side, overlaySize);
   });
+}
+
+function drawSampleOverlay(sample) {
+  const overlaySize = resizeHandOverlay();
+  handCtx.clearRect(0, 0, overlaySize.width, overlaySize.height);
+  drawHandSideGuide(handCtx, overlaySize);
+
+  const sideSamples = [
+    { side: 0, y: sample.leftY },
+    { side: 1, y: sample.rightY },
+  ];
+
+  for (const { side, y } of sideSamples) {
+    if (!Number.isFinite(y)) {
+      continue;
+    }
+    drawHandAnchorMarker({ x: side === 0 ? 0.75 : 0.25, y }, side, overlaySize);
+  }
+}
+
+function drawHandAnchorMarker(anchor, side, overlaySize) {
+  const style = HAND_OVERLAY_STYLES[side] || HAND_OVERLAY_STYLES[0];
+  const anchorPoint = landmarkToPreviewPoint(anchor, overlaySize);
+
+  handCtx.save();
+  handCtx.shadowColor = "rgba(0, 0, 0, 0.72)";
+  handCtx.shadowBlur = 5;
+
+  handCtx.beginPath();
+  handCtx.arc(anchorPoint.x, anchorPoint.y, HAND_ANCHOR_MARKER_RADIUS, 0, Math.PI * 2);
+  handCtx.fillStyle = style.anchor;
+  handCtx.fill();
+  handCtx.lineWidth = 3;
+  handCtx.strokeStyle = "#ffffff";
+  handCtx.stroke();
+
+  handCtx.beginPath();
+  handCtx.moveTo(anchorPoint.x - HAND_ANCHOR_MARKER_RADIUS - 8, anchorPoint.y);
+  handCtx.lineTo(anchorPoint.x + HAND_ANCHOR_MARKER_RADIUS + 8, anchorPoint.y);
+  handCtx.moveTo(anchorPoint.x, anchorPoint.y - HAND_ANCHOR_MARKER_RADIUS - 8);
+  handCtx.lineTo(anchorPoint.x, anchorPoint.y + HAND_ANCHOR_MARKER_RADIUS + 8);
+  handCtx.lineWidth = 3;
+  handCtx.strokeStyle = style.anchor;
+  handCtx.stroke();
+
+  handCtx.beginPath();
+  handCtx.arc(anchorPoint.x, anchorPoint.y, HAND_ANCHOR_MARKER_RADIUS + 10, 0, Math.PI * 2);
+  handCtx.lineWidth = 2;
+  handCtx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  handCtx.stroke();
+
+  handCtx.restore();
 }
 
 function drawHandSideGuide(ctx, overlaySize) {
@@ -1001,6 +1132,7 @@ function startSussyScript() {
 
     gestureStateText.textContent = triangle >= 0 ? "SUS LEFT_HIGH" : "SUS RIGHT_HIGH";
     updateHandMeters(sample);
+    drawSampleOverlay(sample);
     sendHandSample(sample, { record: false });
     controller.timer = window.setTimeout(tick, sampleIntervalMs);
   };
@@ -1066,6 +1198,7 @@ function replayTraceEvent(message) {
       handCount: message.handCount,
     };
     updateHandMeters(sample);
+    drawSampleOverlay(sample);
     sendHandSample(sample, { record: false });
     return;
   }
@@ -1093,18 +1226,32 @@ function stopScript() {
 }
 
 function exportTrace() {
-  if (!trace || !trace.events.length) {
-    statusText.textContent = "There is no saved trace to export.";
+  const payload = traceForExport();
+  if (!payload?.events?.length) {
+    statusText.textContent =
+      "Nothing to export yet. Start Camera, show both hands, play a run, then export.";
     return;
   }
 
-  const blob = new Blob([JSON.stringify(trace, null, 2)], { type: "application/json" });
+  const summary = summarizeRecording(payload);
+  if (!isRecordingWorthSaving(payload)) {
+    statusText.textContent =
+      `Trace too short (${summary?.handSamples || 0} hand samples). ` +
+      "Play a little longer before exporting.";
+    return;
+  }
+
+  const blob = new Blob([JSON.stringify(snapshotRecording(payload, payload.result || "exported"), null, 2)], {
+    type: "application/json",
+  });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = `67-trace-${Date.now()}.json`;
   anchor.click();
   URL.revokeObjectURL(url);
+  statusText.textContent =
+    `Exported ${payload.events.length} events (${summary.handSamples} hand samples, ${summary.dualHands} with both Y).`;
 }
 
 async function importTrace(file) {

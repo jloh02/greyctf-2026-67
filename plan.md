@@ -1,10 +1,12 @@
 # System Design: "67 Gesture" Maze Game (Server-Authoritative Edge AI)
 
+> **Current implementation:** See **§5.6** below and [README.md](README.md). Default production mode is **client-sim + replay verify on finish** (scores > 50), not live server physics broadcasts. Sections 1–4 below describe the original design intent and remain useful context.
+
 ## 1. System Overview
 
 This is a multiplayer-capable, fast-paced dodging game (similar to *Flappy Bird*) controlled by the "67 trend" hand gesture (alternating flat palms moving up and down).
 
-To ensure minimal latency, zero video bandwidth, and high security, the system uses a **Server-Authoritative, Edge-Compute architecture**. The browser processes the video feed locally to extract 3D hand coordinates. Only the mathematical results (coordinates/events) are sent to the backend. The server mathematically verifies the inputs to prevent cheating and broadcasts the game state back to the client.
+To ensure minimal latency, zero video bandwidth, and high security, the system uses an **edge-compute + server-verify** architecture. The browser processes the video feed locally to extract hand coordinates. Only mathematical results (`hands` samples and control messages) are sent to the backend. The server replays high-scoring runs to verify score and flag eligibility.
 
 ---
 
@@ -210,3 +212,16 @@ Separated the deployment shape so it matches the architecture described above.
 * Added a lightweight `frontend/dev-server.js` so local development can run the browser app separately from the backend.
 * Updated the browser WebSocket connection to target the backend service on port `8787` by default, with a `?backend=` override for alternate deployments.
 * Replaced the single-container Compose app with separate `frontend` and `backend` services.
+
+### 5.6 Client-Sim Play + Replay Verification (Current Production Shape)
+
+The live game no longer reconciles client prediction against 30 FPS server state. Instead:
+
+* **Client:** Runs `shared/game-core.js` locally at display rate. MediaPipe stays in the browser; camera mode streams `hands` samples, keyboard mode sends explicit `flap` messages. Physics, collisions, and score are immediate on the client.
+* **Server (default `CLIENT_SIM=true`):** Does not tick physics during play. Appends each `restart`, `hands`, and `flap` message to a per-session input log with `atMs` offsets.
+* **Finish:** When the client reports game over with **claimed score > 50**, it sends `{ type: "finish", score }`. The server replays the log through the same physics + `ServerGestureInterpreter` + anti-cheat pipeline used for live authority.
+* **Flag:** Awarded when replayed score **≥ 67** and matches the claim (`winScore` in `shared/game-core.js`).
+* **Anti-cheat:** Heuristics (cadence, gesture leadup, amplitude/velocity traps) run only while score **> 50** during replay or legacy live mode.
+* **Legacy mode:** `CLIENT_SIM=false` restores server-authoritative 60 TPS simulation and 30 FPS `state` broadcasts for debugging.
+
+See [README.md](README.md) for environment variables and protocol tables.

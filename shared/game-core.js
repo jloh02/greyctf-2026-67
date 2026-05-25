@@ -1,3 +1,4 @@
+// Shared deterministic physics used by the browser (local sim) and backend (replay verify).
 export const GAME_CONSTANTS = Object.freeze({
   width: 960,
   height: 540,
@@ -13,7 +14,8 @@ export const GAME_CONSTANTS = Object.freeze({
   initialPipeX: 1220,
   pipeSpacing: 362.1,
   floorY: 492,
-  winScore: 100,
+  // Flag is awarded when the verified run reaches this pipe score (exactly 67).
+  winScore: 67,
 });
 
 export function createGameState(overrides = {}, constants = GAME_CONSTANTS) {

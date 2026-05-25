@@ -1,3 +1,10 @@
+/**
+ * Main game client — local physics via shared/game-core.js.
+ *
+ * WebSocket traffic records inputs for the server (`hands`, `flap`, `restart`).
+ * When a run ends with score > verifyScoreThreshold (default 50), sends `finish`
+ * and applies the server's `verified` response (authoritative score + flag).
+ */
 import {
   FAST_HAND_LANDMARKER_OPTIONS,
   GestureInterpreter,
@@ -28,6 +35,8 @@ const bestText = document.querySelector("#best");
 const modeText = document.querySelector("#mode");
 const flagBanner = document.querySelector("#flagBanner");
 const flagText = document.querySelector("#flagText");
+const cheatAlert = document.querySelector("#cheatAlert");
+const cheatAlertText = document.querySelector("#cheatAlertText");
 const gestureStateText = document.querySelector("#gestureState");
 const flapPulseText = document.querySelector("#flapPulse");
 const leftMeter = document.querySelector("#leftMeter");
@@ -61,30 +70,19 @@ let constants = { ...GAME_CONSTANTS };
 
 let config = {
   space67Keyboard: false,
+  antiCheatEnabled: true,
+  clientSim: true,
+  verifyScoreThreshold: 50,
 };
 
-let state = {
-  birdY: 230,
-  velocity: 0,
-  score: 0,
+let gameState = createGameState();
+let sessionMeta = {
   best: 0,
   won: false,
   flag: "",
-  acceptedFlapCount: 0,
-  elapsed: 0,
-  spawnTimer: 0,
-  nextPipeId: 1,
-  gameOver: false,
-  awaitingStart: true,
-  gesture: {
-    status: "NEUTRAL",
-    handCount: 0,
-    tracking: "reset",
-    delta: null,
-    triggered: false,
-  },
-  pipes: [],
 };
+let finishSubmitted = false;
+let verificationPending = false;
 
 let socket = null;
 let connected = false;
@@ -106,14 +104,9 @@ let syncState = {
 const PING_INTERVAL_MS = 2000;
 const SYNC_SMOOTHING = 0.2;
 const MAX_RENDER_DT_SECONDS = 0.05;
-const MAX_AUTHORITY_PROJECTION_MS = 250;
 let lastDrawAt = performance.now();
-let predictedState = createGameState({}, constants);
-let pendingFlaps = [];
-let localFlapSequence = 0;
-let predictedInitialized = false;
-let lastGestureCrossCount = 0;
 const localGesture = new GestureInterpreter({
+  onFlap: () => applyLocalFlap(),
   onTelemetry: handleLocalGestureTelemetry,
 });
 
@@ -138,13 +131,11 @@ function connect() {
     const message = JSON.parse(event.data);
     if (message.type === "welcome") {
       constants = { ...GAME_CONSTANTS, ...(message.constants || {}) };
-      config = message.config || config;
+      config = { ...config, ...(message.config || {}) };
       canvas.width = constants.width;
       canvas.height = constants.height;
-      predictedState = createGameState({}, constants);
-      predictedInitialized = false;
-      pendingFlaps = [];
-      localFlapSequence = 0;
+      sessionMeta.best = message.session?.best ?? sessionMeta.best;
+      resetLocalRun();
       applyInputMode();
       if (!cameraStarting) {
         if (config.space67Keyboard) {
@@ -158,8 +149,13 @@ function connect() {
       return;
     }
     if (message.type === "state") {
-      state = message.state;
-      reconcilePredictedState(message.serverTime);
+      if (!config.clientSim) {
+        applyServerState(message.state);
+      }
+      return;
+    }
+    if (message.type === "verified") {
+      applyVerifiedResult(message);
       return;
     }
     if (message.type === "pong") {
@@ -167,11 +163,18 @@ function connect() {
     }
   });
 
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
     connected = false;
     stopPingLoop();
     mode = "Offline";
-    statusText.textContent = "Server disconnected. Restart the Node server and refresh.";
+    const reason = typeof event.reason === "string" ? event.reason.trim() : "";
+    if (reason) {
+      statusText.textContent = reason;
+      showCheatAlert("blocked", reason);
+    } else {
+      statusText.textContent = "Server disconnected. Restart the Node server and refresh.";
+      hideCheatAlert();
+    }
   });
 
   socket.addEventListener("error", () => {
@@ -253,19 +256,16 @@ function sendSync() {
   );
 }
 
-function sendFlap(source, { predictNow = false } = {}) {
+function sendFlap(source) {
   if (!connected || socket.readyState !== WebSocket.OPEN) {
     statusText.textContent = "Flap ignored while server is offline.";
     return;
   }
 
-  if (predictNow) {
-    queuePredictedFlap();
-  }
-
+  applyLocalFlap();
   socket.send(JSON.stringify({ type: "flap", source, clientTime: Date.now() }));
   sentFlaps += 1;
-  flapPulseText.textContent = `${sentFlaps} sent`;
+  flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
   mode = config.space67Keyboard ? "Keyboard" : mediaPipeReady ? "Tracking" : "Online";
 }
 
@@ -309,16 +309,24 @@ function stopCameraTracking() {
   rightMeter.value = 0.5;
   gestureStateText.textContent = "NEUTRAL";
   localGesture.reset();
-  resetPredictionState();
+  resetLocalRun();
+}
+
+function resetLocalRun() {
+  gameState = createGameState({}, constants);
+  finishSubmitted = false;
+  verificationPending = false;
 }
 
 function restartRun() {
   sentFlaps = 0;
   sentHandSamples = 0;
-  flapPulseText.textContent = "0 sent";
-  state = { ...state, won: false, flag: "" };
-  resetPredictionState();
+  flapPulseText.textContent = "0 samples / 0 flaps";
+  sessionMeta.won = false;
+  sessionMeta.flag = "";
+  resetLocalRun();
   localGesture.reset();
+  hideCheatAlert();
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "restart" }));
   }
@@ -330,42 +338,175 @@ function signalSynthetic67() {
   gestureStateText.textContent = `DEV ${currentState}`;
   leftMeter.value = synthetic67LeftHigh ? 0.82 : 0.24;
   rightMeter.value = synthetic67LeftHigh ? 0.24 : 0.82;
-  sendFlap("gesture", { predictNow: true });
+  sendFlap("gesture");
 }
 
 function draw() {
   const now = performance.now();
   const dt = Math.min(MAX_RENDER_DT_SECONDS, Math.max(0, (now - lastDrawAt) / 1000));
   lastDrawAt = now;
-  advancePredictedState(dt);
-  const sim = currentSimulationState();
+  advanceLocalSimulation(dt);
+  checkRunFinished();
 
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, constants.width, constants.height);
-  drawSky(sim);
-  drawPipes(sim);
-  drawFloor(sim);
-  drawBird(sim);
-  drawOverlay(sim);
+  drawSky(gameState);
+  drawPipes(gameState);
+  drawFloor(gameState);
+  drawBird(gameState);
+  drawOverlay(gameState);
 
-  scoreText.textContent = String(sim.score);
-  bestText.textContent = String(Math.max(state.best, sim.score));
+  scoreText.textContent = String(gameState.score);
+  bestText.textContent = String(Math.max(sessionMeta.best, gameState.score));
   modeText.textContent = mode;
-  gestureStateText.textContent = state.gesture?.status || "NEUTRAL";
   updateFlagBanner();
 
   requestAnimationFrame(draw);
 }
 
 function updateFlagBanner() {
-  if (!state.won) {
+  if (!sessionMeta.won) {
     flagBanner.hidden = true;
     flagText.textContent = "";
     return;
   }
 
   flagBanner.hidden = false;
-  flagText.textContent = state.flag || "Flag not configured.";
+  flagText.textContent = sessionMeta.flag || "Flag not configured.";
+}
+
+function showCheatAlert(level, message) {
+  if (!message) {
+    hideCheatAlert();
+    return;
+  }
+
+  cheatAlert.hidden = false;
+  cheatAlert.dataset.level = level;
+  cheatAlertText.textContent = message;
+}
+
+function hideCheatAlert() {
+  cheatAlert.hidden = true;
+  cheatAlertText.textContent = "";
+  delete cheatAlert.dataset.level;
+}
+
+function updateCheatAlertFromState(antiCheat) {
+  if (!config.antiCheatEnabled || antiCheat?.enabled === false || antiCheat?.level === "disabled") {
+    hideCheatAlert();
+    return;
+  }
+
+  if (!antiCheat || antiCheat.level === "none" || !antiCheat.message) {
+    hideCheatAlert();
+    return;
+  }
+
+  const scoreHint =
+    antiCheat.level === "blocked"
+      ? ""
+      : ` (${Math.round(antiCheat.score)}/${antiCheat.blockScore}${antiCheat.lastHeuristic ? ` · ${antiCheat.lastHeuristic}` : ""})`;
+  showCheatAlert(antiCheat.level, `${antiCheat.message}${scoreHint}`);
+}
+
+function applyVerifiedResult(message) {
+  verificationPending = false;
+
+  if (!message.valid) {
+    showCheatAlert("blocked", message.message || "Run verification failed.");
+    statusText.textContent = message.message || "Run verification failed.";
+    return;
+  }
+
+  sessionMeta.best = Math.max(sessionMeta.best, message.score ?? gameState.score);
+  if (message.won) {
+    sessionMeta.won = true;
+    sessionMeta.flag = message.flag || "";
+  }
+
+  hideCheatAlert();
+  if (message.verified) {
+    statusText.textContent = `Run verified: score ${message.score}.`;
+  } else if (mediaPipeReady) {
+    statusText.textContent = "Camera tracking active.";
+  } else {
+    statusText.textContent = "Server connected.";
+  }
+
+  if (message.antiCheat) {
+    updateCheatAlertFromState(message.antiCheat);
+  }
+}
+
+function applyServerState(serverState) {
+  gameState = createGameState(
+    {
+      birdY: serverState.birdY,
+      velocity: serverState.velocity,
+      score: serverState.score,
+      elapsed: serverState.elapsed,
+      spawnTimer: serverState.spawnTimer,
+      gameOver: serverState.gameOver,
+      awaitingStart: serverState.awaitingStart,
+      nextPipeId: serverState.nextPipeId,
+      pipes: serverState.pipes || [],
+    },
+    constants,
+  );
+  sessionMeta.best = Math.max(sessionMeta.best, serverState.best ?? 0);
+  sessionMeta.won = Boolean(serverState.won);
+  sessionMeta.flag = serverState.flag || "";
+  updateCheatAlertFromState(serverState.antiCheat);
+}
+
+function advanceLocalSimulation(dt) {
+  if (!gameState.awaitingStart && !gameState.gameOver) {
+    stepGameState(gameState, dt, constants);
+  }
+}
+
+function applyLocalFlap() {
+  if (gameState.gameOver) {
+    restartRun();
+  }
+  applyCoreFlap(gameState, constants);
+}
+
+function checkRunFinished() {
+  if (!gameState.gameOver || finishSubmitted) {
+    return;
+  }
+
+  finishSubmitted = true;
+  sessionMeta.best = Math.max(sessionMeta.best, gameState.score);
+
+  if (gameState.score >= constants.winScore) {
+    sessionMeta.won = true;
+  }
+
+  if (!config.clientSim || gameState.score <= config.verifyScoreThreshold) {
+    return;
+  }
+
+  submitRunForVerification(gameState.score);
+}
+
+function submitRunForVerification(score) {
+  if (!connected || socket.readyState !== WebSocket.OPEN) {
+    statusText.textContent = "Cannot verify run while server is offline.";
+    return;
+  }
+
+  verificationPending = true;
+  statusText.textContent = "Verifying run with server...";
+  socket.send(
+    JSON.stringify({
+      type: "finish",
+      score,
+      clientTime: Date.now(),
+    }),
+  );
 }
 
 function drawSky(sim) {
@@ -561,13 +702,22 @@ function drawCloud(x, y, scale) {
 }
 
 function drawOverlay(sim) {
+  if (verificationPending) {
+    drawMessage("Verifying", "Server is replaying your run...");
+    return;
+  }
+
   if (sim.awaitingStart) {
     drawMessage("Ready", readySubtitle());
     return;
   }
 
   if (sim.gameOver) {
-    drawMessage("Grounded", "Press Restart or flap again.");
+    const subtitle =
+      sim.score > config.verifyScoreThreshold && config.clientSim
+        ? "Run submitted for verification. Press Restart to play again."
+        : "Press Restart or flap again.";
+    drawMessage("Grounded", subtitle);
   }
 }
 
@@ -713,7 +863,7 @@ function sendHandSample(sample) {
     }),
   );
   sentHandSamples += 1;
-  flapPulseText.textContent = `${sentHandSamples} samples`;
+  flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
 }
 
 function updateHandMeters(sample) {
@@ -730,12 +880,13 @@ function drawHandOverlay(hands) {
   handCtx.clearRect(0, 0, overlaySize.width, overlaySize.height);
   drawHandSideGuide(handCtx, overlaySize);
 
-  hands.slice(0, 2).forEach((hand) => {
+  hands.slice(0, 2).forEach((hand, index) => {
     const anchor = handAnchorPoint(hand);
     if (!anchor) {
       return;
     }
-    const style = HAND_OVERLAY_STYLES[screenSideIndex(anchor)] || HAND_OVERLAY_STYLES[0];
+    const side = hands.length >= 2 ? index : screenSideIndex(anchor);
+    const style = HAND_OVERLAY_STYLES[side] || HAND_OVERLAY_STYLES[0];
     const anchorPoint = landmarkToPreviewPoint(anchor, overlaySize);
 
     handCtx.save();
@@ -827,131 +978,11 @@ function drawSideBracket(ctx, centerX, top, bottom, color, direction) {
 }
 
 function handleLocalGestureTelemetry(telemetry) {
-  const crossCount = telemetry.crossCount || 0;
-  const hadPendingCross = lastGestureCrossCount > 0;
-  if (
-    !keyboardModeEnabled() &&
-    crossCount > 0 &&
-    lastGestureCrossCount === 0 &&
-    telemetry.currentState !== "LEVEL" &&
-    telemetry.jumpDebounceRemainingMs <= 0
-  ) {
-    queuePredictedFlap({ confirmed: false });
-  }
-  if (telemetry.triggered) {
-    confirmPendingGestureFlap();
-  } else if (hadPendingCross && crossCount === 0 && telemetry.currentState !== "LEVEL") {
-    cancelTentativeGestureFlap();
-  }
-  lastGestureCrossCount = telemetry.triggered ? 0 : crossCount;
-}
-
-function queuePredictedFlap({ confirmed = true } = {}) {
-  ensurePredictedState();
-  const sequence = ++localFlapSequence;
-  pendingFlaps.push({
-    sequence,
-    elapsed: predictedState.elapsed,
-    confirmed,
-  });
-  applyCoreFlap(predictedState, constants);
-}
-
-function confirmPendingGestureFlap() {
-  const pending = pendingFlaps.find((flap) => !flap.confirmed);
-  if (pending) {
-    pending.confirmed = true;
-  }
-}
-
-function cancelTentativeGestureFlap() {
-  const index = pendingFlaps.findIndex((flap) => !flap.confirmed);
-  if (index === -1) {
+  if (keyboardModeEnabled()) {
     return;
   }
-  pendingFlaps.splice(index, 1);
-  predictedInitialized = false;
-  ensurePredictedState();
-  reconcilePredictedState();
-}
 
-function resetPredictionState() {
-  predictedInitialized = false;
-  predictedState = createGameState({}, constants);
-  pendingFlaps = [];
-  localFlapSequence = 0;
-  lastGestureCrossCount = 0;
-}
-
-function ensurePredictedState() {
-  if (!predictedInitialized) {
-    predictedState = simulationStateFromAuthority(state);
-    predictedInitialized = true;
-  }
-}
-
-function simulationStateFromAuthority(authority) {
-  return createGameState(
-    {
-      birdY: authority.birdY,
-      velocity: authority.velocity,
-      score: authority.score,
-      elapsed: authority.elapsed,
-      spawnTimer: authority.spawnTimer,
-      gameOver: authority.gameOver,
-      awaitingStart: authority.awaitingStart,
-      nextPipeId: authority.nextPipeId,
-      pipes: authority.pipes || [],
-    },
-    constants,
-  );
-}
-
-function estimateAuthorityProjectionSeconds(serverTime) {
-  if (!Number.isFinite(serverTime)) {
-    return clamp(syncState.rttMs / 2000, 0, MAX_AUTHORITY_PROJECTION_MS / 1000);
-  }
-
-  const estimatedServerNow = Date.now() + syncState.clockOffsetMs;
-  const ageMs = clamp(estimatedServerNow - serverTime, 0, MAX_AUTHORITY_PROJECTION_MS);
-  return ageMs / 1000;
-}
-
-function reconcilePredictedState(serverTime) {
-  if (state.acceptedFlapCount === 0 && state.awaitingStart) {
-    pendingFlaps = [];
-    localFlapSequence = 0;
-  }
-
-  pendingFlaps = pendingFlaps.filter((flap) => flap.sequence > state.acceptedFlapCount);
-  predictedState = simulationStateFromAuthority(state);
-  predictedInitialized = true;
-  const targetElapsed = predictedState.elapsed + estimateAuthorityProjectionSeconds(serverTime);
-
-  for (const flap of pendingFlaps) {
-    const flapElapsed = Math.max(predictedState.elapsed, flap.elapsed);
-    if (flapElapsed > predictedState.elapsed) {
-      stepGameState(predictedState, flapElapsed - predictedState.elapsed, constants);
-    }
-    if (predictedState.gameOver) {
-      break;
-    }
-    applyCoreFlap(predictedState, constants);
-  }
-
-  if (!predictedState.gameOver && targetElapsed > predictedState.elapsed) {
-    stepGameState(predictedState, targetElapsed - predictedState.elapsed, constants);
-  }
-}
-
-function advancePredictedState(dt) {
-  ensurePredictedState();
-  stepGameState(predictedState, dt, constants);
-}
-
-function currentSimulationState() {
-  ensurePredictedState();
-  return predictedState;
+  gestureStateText.textContent = telemetry.status || "NEUTRAL";
 }
 
 function resizeHandOverlay() {

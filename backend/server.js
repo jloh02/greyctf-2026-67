@@ -1,3 +1,18 @@
+/**
+ * 67 Flight backend — WebSocket game service.
+ *
+ * Default mode (CLIENT_SIM=true): the browser runs physics locally for smooth play.
+ * The server only records input events (`restart`, `hands`, `flap`) and does not
+ * broadcast live state. When a run ends with score > VERIFY_SCORE_THRESHOLD (50),
+ * the client sends `{ type: "finish", score }` and the server replays the log through
+ * shared/game-core.js plus gesture + anti-cheat heuristics. The flag is granted when
+ * replay score >= winScore (67) and the claim matches.
+ *
+ * Anti-cheat heuristics run only while replay/live score is > 50.
+ *
+ * Set CLIENT_SIM=false to restore the older server-authoritative loop (60 TPS sim,
+ * 30 FPS state snapshots) for debugging or tooling.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -13,6 +28,7 @@ import {
 const PORT = Number(process.env.PORT || "8787");
 const HOST = process.env.HOST || "127.0.0.1";
 const SPACE_67_KEYBOARD = parseBoolean(process.env.SPACE_67_KEYBOARD, false);
+const DISABLE_ANTI_CHEAT = parseBoolean(process.env.DISABLE_ANTI_CHEAT, false);
 const FINAL_FLAG = process.env.FINAL_FLAG || process.env.FLAG || "";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
 const FRONTEND_ROOT = resolve(process.cwd(), "frontend");
@@ -42,7 +58,10 @@ const MAX_LAG_COMPENSATION_MS = 200;
 const MAX_GESTURE_REPLAY_MS = 420;
 const HISTORY_CAPACITY = 16;
 const HAND_SAMPLE_HISTORY_CAPACITY = 96;
-const WIN_SCORE = GAME_CONSTANTS.winScore;
+const WIN_SCORE = GAME_CONSTANTS.winScore; // 67 — flag threshold
+const CLIENT_SIM = parseBoolean(process.env.CLIENT_SIM, true);
+// Runs with claimed score above this value are replay-verified on `finish`.
+const VERIFY_SCORE_THRESHOLD = Number(process.env.VERIFY_SCORE_THRESHOLD || "50");
 const GESTURE_CONFIG = {
   crossThreshold: 0.1,
   minCrossesPerFlap: 2,
@@ -54,38 +73,38 @@ const GESTURE_CONFIG = {
   levelResetMs: 360,
 };
 const ANTI_CHEAT = {
-  maxFlapsPerSecond: 6,
-  scoreDecayPerSecond: 22,
-  blockScore: 100,
+  maxFlapsPerSecond: 8,
+  scoreDecayPerSecond: 40,
+  blockScore: 150,
   cadenceAudit: {
-    minSamples: 10,
-    minMeanMs: 90,
-    maxStdDevMs: 3,
-    maxCv: 0.025,
-    score: 55,
-    cooldownMs: 1800,
+    minSamples: 12,
+    minMeanMs: 88,
+    maxStdDevMs: 2,
+    maxCv: 0.015,
+    score: 35,
+    cooldownMs: 2500,
   },
   gestureLeadup: {
     windowMs: 420,
-    minSamples: 8,
-    maxSampleGapMs: 140,
-    missingEvidenceScore: 45,
-    cooldownMs: 1000,
+    minSamples: 3,
+    maxSampleGapMs: 280,
+    missingEvidenceScore: 15,
+    cooldownMs: 2000,
   },
   repeatedAmplitude: {
-    minSamples: 8,
+    minSamples: 10,
     minMean: 0.18,
-    maxCv: 0.12,
-    score: 24,
-    cooldownMs: 1400,
+    maxCv: 0.1,
+    score: 16,
+    cooldownMs: 2000,
   },
   constantVelocity: {
-    minSamples: 8,
+    minSamples: 10,
     minAbsVelocity: 0.0012,
-    maxCv: 0.2,
-    minDirectionChanges: 3,
-    score: 22,
-    cooldownMs: 1400,
+    maxCv: 0.15,
+    minDirectionChanges: 4,
+    score: 14,
+    cooldownMs: 2000,
   },
 };
 
@@ -100,7 +119,17 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/healthz") {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, sockets: sockets.size, space67Keyboard: SPACE_67_KEYBOARD }));
+    response.end(
+      JSON.stringify({
+        ok: true,
+        sockets: sockets.size,
+        space67Keyboard: SPACE_67_KEYBOARD,
+        antiCheatEnabled: !DISABLE_ANTI_CHEAT,
+        diagnosticPage: DIAGNOSTIC_PAGE,
+        clientSim: CLIENT_SIM,
+        verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
+      }),
+    );
     return;
   }
 
@@ -202,6 +231,10 @@ server.on("upgrade", (request, socket) => {
 server.listen(PORT, HOST, () => {
   console.log(`67 Flight backend listening on http://${HOST}:${PORT}`);
   console.log(`SPACE_67_KEYBOARD=${SPACE_67_KEYBOARD}`);
+  console.log(`DISABLE_ANTI_CHEAT=${DISABLE_ANTI_CHEAT}`);
+  console.log(`CLIENT_SIM=${CLIENT_SIM}`);
+  console.log(`VERIFY_SCORE_THRESHOLD=${VERIFY_SCORE_THRESHOLD}`);
+  console.log(`DIAGNOSTIC_PAGE=${DIAGNOSTIC_PAGE}${DIAGNOSTIC_PAGE ? " (/diagnostics enabled)" : ""}`);
 });
 
 setInterval(() => {
@@ -224,6 +257,9 @@ class GameSocket {
     this.oneWayLagMs = 0;
     this.clockOffsetMs = 0;
     this.game = new GameSession(this.id);
+    this.clientSim = CLIENT_SIM;
+    this.runLog = [];
+    this.runStartPerf = performance.now();
 
     socket.on("data", (chunk) => this.receive(chunk));
     socket.on("close", () => this.close());
@@ -237,11 +273,22 @@ class GameSocket {
       },
       config: {
         space67Keyboard: SPACE_67_KEYBOARD,
+        antiCheatEnabled: !DISABLE_ANTI_CHEAT,
+        clientSim: CLIENT_SIM,
+        verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
         gesture: GESTURE_CONFIG,
       },
+      session: {
+        best: this.game.best,
+      },
     });
-    this.game.log("Server-authoritative room started.", "info");
-    this.sendState(performance.now(), true);
+    if (this.clientSim) {
+      this.beginRunLog();
+      this.game.log("Client-sim session started. Inputs are logged for replay verification.", "info");
+    } else {
+      this.game.log("Server-authoritative room started.", "info");
+      this.sendState(performance.now(), true);
+    }
   }
 
   receive(chunk) {
@@ -291,6 +338,10 @@ class GameSocket {
     }
 
     if (message.type === "flap") {
+      if (this.clientSim) {
+        this.recordRunEvent(message);
+        return;
+      }
       const actionTime = this.clientPerfTime(message.clientTime);
       this.game.flap(message.source === "gesture" ? "67 gesture" : "manual input", actionTime);
       this.sendState(performance.now(), true);
@@ -301,6 +352,10 @@ class GameSocket {
     }
 
     if (message.type === "hands") {
+      if (this.clientSim) {
+        this.recordRunEvent(message);
+        return;
+      }
       const sampleTime = this.clientPerfTime(message.clientTime);
       const triggered = this.game.processHandSample(message, sampleTime);
       if (triggered) {
@@ -314,9 +369,79 @@ class GameSocket {
 
     if (message.type === "restart") {
       this.game.reset();
+      if (this.clientSim) {
+        this.beginRunLog();
+        this.game.log("Run reset by client.", "info");
+        return;
+      }
       this.game.log("Run reset by client.", "info");
       this.sendState(performance.now(), true);
+      return;
     }
+
+    if (message.type === "finish") {
+      this.handleFinish(message);
+    }
+  }
+
+  beginRunLog() {
+    this.runStartPerf = performance.now();
+    this.runLog = [{ type: "restart", atMs: 0 }];
+  }
+
+  /** Append a replayable input event while CLIENT_SIM is active. */
+  recordRunEvent(message) {
+    const atMs = performance.now() - this.runStartPerf;
+    const entry = { type: message.type, atMs };
+    if (message.type === "hands") {
+      entry.leftY = message.leftY;
+      entry.rightY = message.rightY;
+      entry.handCount = message.handCount;
+    } else if (message.type === "flap") {
+      entry.source = message.source;
+    }
+    this.runLog.push(entry);
+  }
+
+  /** Replay the session log when claimed score exceeds VERIFY_SCORE_THRESHOLD. */
+  handleFinish(message) {
+    const claimedScore = clampInteger(message.score, 0, WIN_SCORE);
+    if (claimedScore <= VERIFY_SCORE_THRESHOLD) {
+      this.send({
+        type: "verified",
+        valid: true,
+        verified: false,
+        score: claimedScore,
+        claimedScore,
+        won: claimedScore >= WIN_SCORE,
+        flag: "",
+        message: "",
+        antiCheat: GameSession.disabledAntiCheatSnapshot(),
+      });
+      return;
+    }
+
+    const result = GameSession.verifyRecordedRun(this.runLog, claimedScore);
+    if (result.valid) {
+      this.game.best = Math.max(this.game.best, result.score);
+    }
+
+    if (result.blocked) {
+      this.close(1008, result.message);
+      return;
+    }
+
+    this.send({
+      type: "verified",
+      verified: true,
+      valid: result.valid,
+      score: result.score,
+      claimedScore,
+      won: result.won,
+      flag: result.flag,
+      message: result.message,
+      antiCheat: result.antiCheat,
+    });
   }
 
   handlePing(message) {
@@ -356,7 +481,7 @@ class GameSocket {
   }
 
   tick(dt, now) {
-    if (this.closed) {
+    if (this.closed || this.clientSim) {
       return;
     }
     this.game.tick(dt, now);
@@ -441,12 +566,32 @@ class GameSession {
     this.antiCheatScore = 0;
     this.antiCheatLastUpdateAt = performance.now();
     this.antiCheatCooldowns = {};
+    this.lastSuspicionDetail = "";
+    this.lastSuspicionAt = 0;
+    this.lastSuspicionKey = "";
     this.history = [];
     this.replaying = false;
     this.gesture.reset();
   }
 
   flap(source, actionTimeMs = performance.now()) {
+    if (this.verifyReplay) {
+      const verdict = this.auditFlap(source, actionTimeMs);
+      if (verdict.blocked) {
+        this.gameOver = true;
+        this.disconnectReason = verdict.message;
+        return;
+      }
+      if (verdict.message) {
+        this.log(verdict.message, verdict.level);
+      }
+      applyCoreFlap(this, GAME_CONSTANTS);
+      this.flapTimes.push(actionTimeMs);
+      this.flapTimes = this.flapTimes.slice(-12);
+      this.acceptedFlapCount += 1;
+      return;
+    }
+
     let preservedHandSamples = null;
     if (this.gameOver) {
       preservedHandSamples = this.handSamples.map((sample) => ({ ...sample }));
@@ -499,23 +644,39 @@ class GameSession {
       rightY: normalizedOrNull(message.rightY),
       handCount: clampInteger(message.handCount, 0, 2),
     };
-    this.recordHandSample(sample, sampleTime);
     const telemetry = this.gesture.process(sample, sampleTime);
+    this.recordHandSampleFromTelemetry(telemetry, sampleTime);
     return telemetry.triggered;
   }
 
-  recordHandSample(sample, now) {
-    if (sample.handCount < 2 || sample.leftY === null || sample.rightY === null) {
-      return;
+  recordHandSampleFromTelemetry(telemetry, now) {
+    let leftHeight = telemetry.leftHeight;
+    let rightHeight = telemetry.rightHeight;
+    let delta = telemetry.delta;
+
+    if (!Number.isFinite(delta) && Number.isFinite(leftHeight) && Number.isFinite(rightHeight)) {
+      delta = leftHeight - rightHeight;
     }
 
-    const leftHeight = handHeight(sample.leftY);
-    const rightHeight = handHeight(sample.rightY);
+    if (
+      !Number.isFinite(leftHeight) ||
+      !Number.isFinite(rightHeight) ||
+      !Number.isFinite(delta)
+    ) {
+      leftHeight = this.gesture.heights[0];
+      rightHeight = this.gesture.heights[1];
+      if (Number.isFinite(leftHeight) && Number.isFinite(rightHeight)) {
+        delta = leftHeight - rightHeight;
+      } else {
+        return;
+      }
+    }
+
     this.handSamples.push({
       t: now,
       leftHeight,
       rightHeight,
-      delta: leftHeight - rightHeight,
+      delta,
     });
     if (this.handSamples.length > HAND_SAMPLE_HISTORY_CAPACITY) {
       this.handSamples.shift();
@@ -619,7 +780,12 @@ class GameSession {
   }
 
   auditFlap(source, now) {
-    if (SPACE_67_KEYBOARD) {
+    if (SPACE_67_KEYBOARD || DISABLE_ANTI_CHEAT) {
+      return { blocked: false };
+    }
+
+    // Anti-cheat only applies once pipe score exceeds the verification threshold.
+    if (this.score <= VERIFY_SCORE_THRESHOLD) {
       return { blocked: false };
     }
 
@@ -687,6 +853,9 @@ class GameSession {
 
     this.antiCheatCooldowns[key] = now;
     this.antiCheatScore += score;
+    this.lastSuspicionDetail = detail;
+    this.lastSuspicionAt = now;
+    this.lastSuspicionKey = key;
     this.log(`Anti-cheat suspicion +${score}: ${detail} (score=${this.antiCheatScore.toFixed(1)}).`, "warn");
     if (this.antiCheatScore >= ANTI_CHEAT.blockScore) {
       return {
@@ -694,19 +863,68 @@ class GameSession {
         message: "Disconnected: anti-cheat heuristics flagged scripted inputs.",
       };
     }
-    return null;
+    return {
+      blocked: false,
+      warned: true,
+      level: "warn",
+      message: `Suspicious input detected: ${detail}`,
+    };
+  }
+
+  static disabledAntiCheatSnapshot() {
+    return {
+      enabled: false,
+      score: 0,
+      blockScore: ANTI_CHEAT.blockScore,
+      level: "disabled",
+      message: "",
+      lastHeuristic: "",
+    };
+  }
+
+  antiCheatSnapshot() {
+    if (DISABLE_ANTI_CHEAT) {
+      return GameSession.disabledAntiCheatSnapshot();
+    }
+
+    if (this.score <= VERIFY_SCORE_THRESHOLD) {
+      return GameSession.disabledAntiCheatSnapshot();
+    }
+
+    const score = this.antiCheatScore;
+    const blockScore = ANTI_CHEAT.blockScore;
+    let level = "none";
+    if (this.disconnectReason) {
+      level = "blocked";
+    } else if (score >= blockScore * 0.7) {
+      level = "critical";
+    } else if (score >= blockScore * 0.25) {
+      level = "warning";
+    }
+
+    return {
+      enabled: true,
+      score: Math.round(score * 10) / 10,
+      blockScore,
+      level,
+      message: this.disconnectReason || (score > 0 ? this.lastSuspicionDetail : "") || "",
+      lastHeuristic: this.lastSuspicionKey || "",
+    };
   }
 
   auditGestureLeadup(now) {
+    const recentTrackingMs = now - this.gesture.lastSeenAt;
     const windowStart = now - ANTI_CHEAT.gestureLeadup.windowMs;
     const recent = this.handSamples.filter((sample) => sample.t >= windowStart && sample.t <= now);
     const lastSample = recent.at(-1);
-
-    if (
+    const motionGapMs = lastSample ? now - lastSample.t : Infinity;
+    const hadRecentHandTracking = recentTrackingMs <= GESTURE_CONFIG.trackingGraceMs;
+    const sparseSamples =
       recent.length < ANTI_CHEAT.gestureLeadup.minSamples ||
       !lastSample ||
-      now - lastSample.t > ANTI_CHEAT.gestureLeadup.maxSampleGapMs
-    ) {
+      motionGapMs > ANTI_CHEAT.gestureLeadup.maxSampleGapMs;
+
+    if (sparseSamples && !hadRecentHandTracking) {
       return this.addSuspicion(
         ANTI_CHEAT.gestureLeadup.missingEvidenceScore,
         "leadup",
@@ -714,6 +932,10 @@ class GameSession {
         now,
         ANTI_CHEAT.gestureLeadup.cooldownMs,
       );
+    }
+
+    if (recent.length < 2) {
+      return null;
     }
 
     const excursionAmplitudes = recent
@@ -794,6 +1016,7 @@ class GameSession {
       gameOver: this.gameOver,
       awaitingStart: this.awaitingStart,
       gesture: this.gesture.snapshot(),
+      antiCheat: this.antiCheatSnapshot(),
       pipes: this.pipes.map((pipe) => ({
         id: pipe.id,
         x: pipe.x,
@@ -805,6 +1028,80 @@ class GameSession {
 
   log(message, level = "info") {
     console.log(`[${level}] ${this.playerId}: ${message}`);
+  }
+
+  /** Deterministic replay of a client-sim input log for score + anti-cheat validation. */
+  static verifyRecordedRun(runLog, claimedScore) {
+    const replay = new GameSession("verify");
+    replay.reset();
+    replay.verifyReplay = true;
+
+    const events = [...runLog].sort((left, right) => left.atMs - right.atMs);
+    let simMs = 0;
+
+    const advanceTo = (targetMs) => {
+      while (simMs + TICK_MS <= targetMs && !replay.gameOver) {
+        if (!replay.awaitingStart) {
+          replay.tick(TICK_SECONDS, simMs + TICK_MS);
+        }
+        simMs += TICK_MS;
+      }
+
+      const remainingMs = targetMs - simMs;
+      if (remainingMs > 0.5 && !replay.gameOver && !replay.awaitingStart) {
+        replay.tick(remainingMs / 1000, targetMs);
+        simMs = targetMs;
+      }
+    };
+
+    for (const event of events) {
+      if (event.type === "restart") {
+        replay.reset();
+        simMs = event.atMs;
+        continue;
+      }
+
+      advanceTo(event.atMs);
+
+      if (event.type === "hands") {
+        replay.processHandSample(
+          {
+            leftY: event.leftY,
+            rightY: event.rightY,
+            handCount: event.handCount,
+          },
+          event.atMs,
+        );
+        continue;
+      }
+
+      if (event.type === "flap") {
+        replay.flap(event.source === "gesture" ? "67 gesture" : "manual input", event.atMs);
+        if (replay.disconnectReason) {
+          break;
+        }
+      }
+    }
+
+    const score = replay.score;
+    const won = score >= WIN_SCORE;
+    const valid = score === claimedScore && !replay.disconnectReason;
+    let message = "";
+    if (replay.disconnectReason) {
+      message = replay.disconnectReason;
+    } else if (!valid) {
+      message = `Verification failed: replay score ${score} does not match claimed ${claimedScore}.`;
+    }
+
+    return {
+      valid,
+      blocked: Boolean(replay.disconnectReason),
+      score,
+      won,
+      flag: won ? FINAL_FLAG : "",
+      message,
+      antiCheat: replay.antiCheatSnapshot(),
+    };
   }
 }
 
@@ -1004,6 +1301,22 @@ class ServerGestureInterpreter {
 
   holdOrReset(now, handCount = 0) {
     if (now - this.lastSeenAt <= this.config.trackingGraceMs) {
+      const leftHeight = this.heights[0];
+      const rightHeight = this.heights[1];
+      if (leftHeight !== null && rightHeight !== null) {
+        const delta = leftHeight - rightHeight;
+        return this.emit({
+          status: "TRACKING HOLD",
+          handCount,
+          tracking: "hold",
+          leftHeight,
+          rightHeight,
+          delta,
+          currentState: this.deltaState(delta),
+          triggered: false,
+        });
+      }
+
       return this.emit({
         status: "TRACKING HOLD",
         handCount,

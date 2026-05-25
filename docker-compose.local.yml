@@ -9,6 +9,9 @@ services:
       NODE_ENV: production
       DIAGNOSTIC_PAGE: "${DIAGNOSTIC_PAGE:-true}"
       SPACE_67_KEYBOARD: "${SPACE_67_KEYBOARD:-false}"
+      DISABLE_ANTI_CHEAT: "${DISABLE_ANTI_CHEAT:-false}"
+      CLIENT_SIM: "${CLIENT_SIM:-true}"
+      VERIFY_SCORE_THRESHOLD: "${VERIFY_SCORE_THRESHOLD:-50}"
       FLAG: "${FLAG:-grey{placeholder_6767}}"
     ports:
       - "8787:8787"
