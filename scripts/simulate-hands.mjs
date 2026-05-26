@@ -4,75 +4,37 @@
  *
  * Streams `hands` samples (and optional trace replay), then submits `finish` with
  * SIMULATE_CLAIMED_SCORE when above VERIFY_SCORE_THRESHOLD so the server replays
- * the session log. Useful for anti-cheat regression (sussy) and human traces.
+ * the session log.
  */
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { WIN_SCORE } from "../shared/game-core.js";
+import { createHumanLikeSampleFactory } from "./lib/hand-samples.mjs";
+import {
+  SAMPLE_INTERVAL_MS,
+  clamp,
+  loadTrace,
+  parseArgs,
+  scaleTraceEvents,
+  summarizeTrace,
+} from "./lib/trace-utils.mjs";
 
-const mode = process.argv[2] || "sussy";
-const targetUrl =
-  mode === "trace"
-    ? process.argv[4] || process.env.TARGET_WS_URL || "ws://127.0.0.1:8787/ws"
-    : process.argv[3] || process.env.TARGET_WS_URL || "ws://127.0.0.1:8787/ws";
-const sampleIntervalMs = 1000 / 60;
+const argv = process.argv.slice(2);
+const mode = argv[0] || "sussy";
+const traceScale = Number(process.env.TRACE_SCALE || "1");
+const sampleIntervalMs = SAMPLE_INTERVAL_MS;
 const runMs = Number(process.env.SIMULATE_MS || (mode === "sussy" ? 12000 : 18000));
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function loadTrace(path) {
-  const trace = JSON.parse(readFileSync(resolve(path), "utf8"));
-  if (!trace?.events?.length) {
-    throw new Error(`Trace at ${path} has no events.`);
-  }
-  return trace;
-}
-
-function summarizeTrace(trace) {
-  const handEvents = trace.events.filter((event) => event.message?.type === "hands");
-  const dualHands = handEvents.filter(
-    (event) =>
-      Number.isFinite(event.message.leftY) && Number.isFinite(event.message.rightY),
-  ).length;
-  const durationMs = trace.events.at(-1)?.atMs || 0;
-  return {
-    events: trace.events.length,
-    handEvents: handEvents.length,
-    dualHands,
-    flaps: trace.flaps || trace.events.filter((event) => event.message?.type === "flap").length,
-    durationMs,
-  };
-}
+const targetUrl =
+  mode === "trace"
+    ? argv[2] || process.env.TARGET_WS_URL || "ws://127.0.0.1:8787/ws"
+    : argv[1] || process.env.TARGET_WS_URL || "ws://127.0.0.1:8787/ws";
 
 function createSampleGenerator(modeName) {
-  if (modeName === "human") {
-    let phase = 0;
-    let periodMs = 340;
-    let amplitude = 0.21;
-    let nextPeriodChangeAt = 0;
-
-    return (elapsedMs) => {
-      if (elapsedMs >= nextPeriodChangeAt) {
-        periodMs = 280 + Math.random() * 180;
-        amplitude = 0.17 + Math.random() * 0.07;
-        nextPeriodChangeAt = elapsedMs + 900 + Math.random() * 1400;
-      }
-
-      phase += sampleIntervalMs / periodMs;
-      const triangle = phase % 2 < 1 ? (phase % 1) * 2 - 1 : 3 - (phase % 1) * 2;
-      const noise = (Math.random() - 0.5) * 0.035;
-      const offset = amplitude * triangle + noise;
-      const centerHeight = 0.56 + (Math.random() - 0.5) * 0.02;
-      const leftHeight = clamp(centerHeight + offset, 0.08, 0.92);
-      const rightHeight = clamp(centerHeight - offset, 0.08, 0.92);
-      return {
-        leftY: 1 - leftHeight,
-        rightY: 1 - rightHeight,
-        handCount: 2,
-      };
-    };
+  if (modeName === "human" || modeName === "loop") {
+    return createHumanLikeSampleFactory({
+      seed: modeName === "loop" ? 42 : 7,
+      periodMs: modeName === "loop" ? 380 : 340,
+      amplitude: 0.2,
+    });
   }
 
   const periodMs = 180;
@@ -195,20 +157,30 @@ async function waitForWelcome(socket) {
   });
 }
 
+function prepareTraceEvents(trace) {
+  let events = trace.events.filter(
+    (entry) => entry.message?.type && entry.message.type !== "restart",
+  );
+  if (traceScale !== 1) {
+    events = scaleTraceEvents(events, traceScale);
+    console.log(`Applied TRACE_SCALE=${traceScale}`);
+  }
+  return events;
+}
+
 async function replayTrace(trace, socket) {
-  const summary = summarizeTrace(trace);
+  const events = prepareTraceEvents(trace);
+  const durationMs = events.at(-1)?.atMs || 0;
+  const handEvents = events.filter((entry) => entry.message.type === "hands").length;
+  const flaps = events.filter((entry) => entry.message.type === "flap").length;
   console.log(
-    `Replaying trace: ${summary.events} events, ${summary.handEvents} hand samples (${summary.dualHands} with both Y), ${summary.flaps} flaps, ${(summary.durationMs / 1000).toFixed(2)}s`,
+    `Replaying trace: ${events.length} events, ${handEvents} hand samples, ${flaps} flaps, ${(durationMs / 1000).toFixed(2)}s`,
   );
 
   socket.send(JSON.stringify({ type: "restart" }));
 
   await new Promise((resolve) => {
-    for (const entry of trace.events) {
-      if (entry.message?.type === "restart") {
-        continue;
-      }
-
+    for (const entry of events) {
       setTimeout(() => {
         if (socket.readyState !== WebSocket.OPEN) {
           return;
@@ -218,12 +190,13 @@ async function replayTrace(trace, socket) {
           JSON.stringify({
             ...entry.message,
             clientTime: Date.now(),
+            traceAtMs: entry.atMs,
           }),
         );
       }, entry.atMs);
     }
 
-    setTimeout(resolve, summary.durationMs + 250);
+    setTimeout(resolve, durationMs + 500);
   });
 }
 
@@ -263,9 +236,11 @@ async function main() {
   const metrics = createSocketMetrics();
 
   if (mode === "trace") {
-    const tracePath = process.argv[3];
+    const tracePath = argv[1];
     if (!tracePath) {
-      throw new Error("Usage: node scripts/simulate-hands.mjs trace /path/to/trace.json [ws://host/ws]");
+      throw new Error(
+        "Usage: node scripts/simulate-hands.mjs trace /path/to/trace.json [ws://host/ws]",
+      );
     }
 
     const trace = loadTrace(tracePath);

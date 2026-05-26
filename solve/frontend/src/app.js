@@ -1,13 +1,24 @@
 import {
   FAST_HAND_LANDMARKER_OPTIONS,
+  GestureInterpreter,
   handAnchorPoint,
   handHeight,
   orderedHands,
   screenSideIndex,
 } from "./gesture.js";
+import {
+  GAME_CONSTANTS,
+  WIN_SCORE,
+  applyFlap as applyCoreFlap,
+  createGameState,
+  stepGameState,
+} from "/shared/game-core.js";
+import { buildSolveTrace } from "/shared/flap-solver.js";
 
 const TRACE_STORAGE_KEY = "solve-lab:last-trace";
+const RECORD_HANDS_ONLY = true;
 const MAX_LOG_EVENTS = 120;
+const MAX_RENDER_DT_SECONDS = 0.05;
 const TRACE_MIN_HAND_SAMPLES = 30;
 const TRACE_MIN_DURATION_MS = 1500;
 const PING_INTERVAL_MS = 2000;
@@ -43,6 +54,8 @@ const cameraButton = document.querySelector("#cameraButton");
 const stopScriptButton = document.querySelector("#stopScriptButton");
 const runSussyButton = document.querySelector("#runSussyButton");
 const runGoodButton = document.querySelector("#runGoodButton");
+const runSolvePackButton = document.querySelector("#runSolvePackButton");
+const runPipeSolverButton = document.querySelector("#runPipeSolverButton");
 const exportTraceButton = document.querySelector("#exportTraceButton");
 const importTraceButton = document.querySelector("#importTraceButton");
 const importTraceInput = document.querySelector("#importTraceInput");
@@ -72,34 +85,31 @@ let atlasCanvas = null;
 atlas.addEventListener("load", prepareAtlasTransparency);
 
 let configResponse = null;
-let constants = {
-  width: 960,
-  height: 540,
-  birdX: 240,
-  pipeWidth: 74,
-  pipeGap: 168,
-  floorY: 492,
-};
+let constants = { ...GAME_CONSTANTS };
 
 let config = {
   space67Keyboard: false,
+  clientSim: true,
+  winScore: WIN_SCORE,
+  verifyScoreThreshold: 50,
 };
 
-let state = {
-  birdY: 230,
-  velocity: 0,
-  score: 0,
+let state = createGameState();
+let sessionMeta = {
   best: 0,
   won: false,
   flag: "",
-  elapsed: 0,
-  gameOver: false,
-  awaitingStart: true,
-  gesture: {
-    status: "NEUTRAL",
-  },
-  pipes: [],
 };
+let finishSubmitted = false;
+let verificationPending = false;
+let lastDrawAt = performance.now();
+
+const localGesture = new GestureInterpreter({
+  onFlap: () => applyLocalFlap(),
+  onTelemetry: (telemetry) => {
+    state.gesture = telemetry;
+  },
+});
 
 let socket = null;
 let debugSocket = null;
@@ -134,6 +144,7 @@ async function boot() {
   restoreTraceState();
   connectSockets();
   requestAnimationFrame(draw);
+  applyInputMode();
 }
 
 async function loadConfig() {
@@ -182,25 +193,22 @@ function connectGameSocket() {
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "welcome") {
-      constants = message.constants;
-      config = message.config || config;
+      constants = { ...GAME_CONSTANTS, ...(message.constants || {}) };
+      config = { ...config, ...(message.config || {}) };
       canvas.width = constants.width;
       canvas.height = constants.height;
-      if (!cameraStarting) {
-        if (config.space67Keyboard) {
-          statusText.textContent = "Proxy connected. Keyboard mode active.";
-        } else if (mediaPipeReady) {
-          statusText.textContent = "Camera tracking active through proxy.";
-        } else {
-          statusText.textContent = "Starting camera for trace recording.";
-          startCamera();
-        }
-      }
+      resetLocalRun();
+      applyInputMode();
       return;
     }
     if (message.type === "state") {
-      state = message.state;
-      maybeFinalizeRecording();
+      if (!config.clientSim) {
+        applyServerState(message.state);
+      }
+      return;
+    }
+    if (message.type === "verified") {
+      applyVerifiedResult(message);
       return;
     }
     if (message.type === "pong") {
@@ -328,12 +336,25 @@ function sendControlMessage(message) {
   return true;
 }
 
-function sendTrackedMessage(message, { record = true } = {}) {
+function outboundPayload(message, { traceAtMs } = {}) {
+  const payload = {
+    ...message,
+    clientTime: Date.now(),
+  };
+  if (Number.isFinite(traceAtMs)) {
+    payload.traceAtMs = traceAtMs;
+  } else if (currentRecording.startedAt !== null) {
+    payload.traceAtMs = Date.now() - currentRecording.startedAt;
+  }
+  return payload;
+}
+
+function sendTrackedMessage(message, { record = true, traceAtMs } = {}) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     return false;
   }
 
-  socket.send(JSON.stringify(message));
+  socket.send(JSON.stringify(outboundPayload(message, { traceAtMs })));
   if (record) {
     recordTraceEvent(message);
   }
@@ -341,7 +362,12 @@ function sendTrackedMessage(message, { record = true } = {}) {
 }
 
 function recordTraceEvent(message) {
-  if (scriptController || message.type === "ping" || message.type === "sync") {
+  if (
+    scriptController ||
+    message.type === "ping" ||
+    message.type === "sync" ||
+    (RECORD_HANDS_ONLY && message.type === "flap")
+  ) {
     return;
   }
 
@@ -370,7 +396,7 @@ function maybeFinalizeRecording() {
     return;
   }
 
-  if (state.gameOver || state.won) {
+  if (state.gameOver || sessionMeta.won) {
     if (!isRecordingWorthSaving(currentRecording)) {
       const handSamples = countHandSamples(currentRecording);
       statusText.textContent =
@@ -382,7 +408,7 @@ function maybeFinalizeRecording() {
     }
 
     currentRecording.completedAt = new Date().toISOString();
-    currentRecording.result = state.won ? "won" : "game-over";
+    currentRecording.result = sessionMeta.won ? "won" : "game-over";
     currentRecording.score = state.score;
     trace = currentRecording;
     saveTrace(trace);
@@ -548,11 +574,20 @@ function isTrace(value) {
   return value && Array.isArray(value.events);
 }
 
+function resetLocalRun() {
+  state = createGameState({}, constants);
+  finishSubmitted = false;
+  verificationPending = false;
+  sessionMeta.won = false;
+  sessionMeta.flag = "";
+  localGesture.reset();
+}
+
 function restartRun({ clearRecording = true } = {}) {
   sentFlaps = 0;
   sentHandSamples = 0;
   flapPulseText.textContent = "0 samples";
-  state = { ...state, won: false, flag: "" };
+  resetLocalRun();
 
   if (clearRecording && !scriptController) {
     currentRecording = createEmptyTrace();
@@ -562,7 +597,15 @@ function restartRun({ clearRecording = true } = {}) {
   sendTrackedMessage({ type: "restart" }, { record: !scriptController });
 }
 
+function applyLocalFlap() {
+  if (state.gameOver) {
+    restartRun({ clearRecording: false });
+  }
+  applyCoreFlap(state, constants);
+}
+
 function sendFlap(source = "gesture", { record = true } = {}) {
+  applyLocalFlap();
   const sent = sendTrackedMessage({ type: "flap", source, clientTime: Date.now() }, { record });
   if (!sent) {
     statusText.textContent = "Flap ignored while socket is offline.";
@@ -574,7 +617,101 @@ function sendFlap(source = "gesture", { record = true } = {}) {
   mode = config.space67Keyboard ? "Keyboard" : mediaPipeReady ? "Tracking" : "Online";
 }
 
+function applyServerState(serverState) {
+  state = createGameState(
+    {
+      birdY: serverState.birdY,
+      velocity: serverState.velocity,
+      score: serverState.score,
+      elapsed: serverState.elapsed,
+      spawnTimer: serverState.spawnTimer,
+      gameOver: serverState.gameOver,
+      awaitingStart: serverState.awaitingStart,
+      nextPipeId: serverState.nextPipeId,
+      pipes: serverState.pipes || [],
+    },
+    constants,
+  );
+  sessionMeta.best = Math.max(sessionMeta.best, serverState.best ?? 0);
+  sessionMeta.won = Boolean(serverState.won);
+  sessionMeta.flag = serverState.flag || "";
+}
+
+function advanceLocalSimulation(dt) {
+  if (!state.awaitingStart && !state.gameOver) {
+    stepGameState(state, dt, constants);
+  }
+}
+
+function targetWinScore() {
+  return constants.winScore ?? config.winScore ?? WIN_SCORE;
+}
+
+function verifyScoreThreshold() {
+  return config.verifyScoreThreshold ?? 50;
+}
+
+function scoreNeedsVerification(score) {
+  return config.clientSim !== false && score > verifyScoreThreshold();
+}
+
+function checkRunFinished() {
+  if (!state.gameOver || finishSubmitted) {
+    return;
+  }
+
+  finishSubmitted = true;
+  sessionMeta.best = Math.max(sessionMeta.best, state.score);
+  maybeFinalizeRecording();
+
+  if (state.score >= targetWinScore()) {
+    sessionMeta.won = true;
+    updateFlagBanner();
+  }
+
+  if (!scoreNeedsVerification(state.score)) {
+    return;
+  }
+
+  submitRunForVerification(state.score);
+}
+
+function submitRunForVerification(score) {
+  if (!connected || socket.readyState !== WebSocket.OPEN) {
+    statusText.textContent = "Cannot verify run while server is offline.";
+    return;
+  }
+
+  verificationPending = true;
+  statusText.textContent = `Verifying run (score ${score})...`;
+  sendControlMessage({
+    type: "finish",
+    score,
+    clientTime: Date.now(),
+  });
+}
+
+function applyVerifiedResult(message) {
+  verificationPending = false;
+  if (message.valid && message.won) {
+    sessionMeta.won = true;
+    sessionMeta.flag = message.flag || "";
+    statusText.textContent = "Verified win.";
+  } else if (message.blocked || message.antiCheat?.level === "blocked") {
+    statusText.textContent = message.message || "Verification blocked.";
+  } else {
+    statusText.textContent = message.message || `Verify failed (score ${message.score}).`;
+  }
+  updateFlagBanner();
+}
+
 function draw() {
+  const now = performance.now();
+  const dt = Math.min(MAX_RENDER_DT_SECONDS, Math.max(0, (now - lastDrawAt) / 1000));
+  lastDrawAt = now;
+  advanceLocalSimulation(dt);
+  checkRunFinished();
+
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, constants.width, constants.height);
   drawSky();
@@ -584,7 +721,7 @@ function draw() {
   drawOverlay();
 
   scoreText.textContent = String(state.score);
-  bestText.textContent = String(state.best);
+  bestText.textContent = String(Math.max(sessionMeta.best, state.score));
   modeText.textContent = mode;
   gestureStateText.textContent = state.gesture?.status || "NEUTRAL";
   updateFlagBanner();
@@ -593,14 +730,14 @@ function draw() {
 }
 
 function updateFlagBanner() {
-  if (!state.won) {
+  if (!sessionMeta.won) {
     flagBanner.hidden = true;
     flagText.textContent = "";
     return;
   }
 
   flagBanner.hidden = false;
-  flagText.textContent = state.flag || "Flag not configured.";
+  flagText.textContent = sessionMeta.flag || "Flag not configured.";
 }
 
 function drawSky() {
@@ -790,9 +927,64 @@ function drawMessage(title, subtitle) {
   ctx.textAlign = "start";
 }
 
+function cameraModeEnabled() {
+  return !config.space67Keyboard;
+}
+
+function applyInputMode() {
+  if (!cameraModeEnabled()) {
+    stopCameraTracking();
+    localGesture.reset();
+    cameraButton.disabled = true;
+    if (connected) {
+      statusText.textContent = "Proxy connected. Keyboard mode active.";
+    } else {
+      statusText.textContent = "Keyboard mode active (camera disabled).";
+    }
+    mode = connected ? "Keyboard" : "Offline";
+    return;
+  }
+
+  cameraButton.disabled = false;
+  if (!mediaPipeReady && !cameraStarting) {
+    startCamera();
+  } else if (mediaPipeReady) {
+    statusText.textContent = connected
+      ? "Camera tracking active through proxy."
+      : "Camera active. Proxy offline.";
+    mode = "Tracking";
+  }
+}
+
+async function createHandLandmarker() {
+  const { FilesetResolver, HandLandmarker } = await import(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18",
+  );
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm",
+  );
+  const modelAssetPath =
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+  let lastError = null;
+  for (const delegate of ["GPU", "CPU"]) {
+    try {
+      return await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath, delegate },
+        ...FAST_HAND_LANDMARKER_OPTIONS,
+      });
+    } catch (error) {
+      lastError = error;
+      console.warn(`Hand landmarker (${delegate}) failed:`, error);
+    }
+  }
+
+  throw lastError ?? new Error("Could not initialize hand landmarker.");
+}
+
 async function startCamera() {
   stopScript();
-  if (config.space67Keyboard) {
+  if (!cameraModeEnabled()) {
     statusText.textContent = "Camera input is disabled while backend keyboard mode is on.";
     return;
   }
@@ -801,23 +993,21 @@ async function startCamera() {
     return;
   }
 
+  if (!window.isSecureContext) {
+    statusText.textContent =
+      "Camera requires a secure context — open http://127.0.0.1:4180 (not file://).";
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    statusText.textContent = "Camera API is not available in this browser.";
+    return;
+  }
+
   try {
     cameraStarting = true;
-    statusText.textContent = "Loading hand model.";
-    const { FilesetResolver, HandLandmarker } = await import(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18"
-    );
-    const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm",
-    );
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath:
-          "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-        delegate: "GPU",
-      },
-      ...FAST_HAND_LANDMARKER_OPTIONS,
-    });
+    cameraButton.disabled = true;
+    statusText.textContent = "Requesting camera access…";
 
     video.srcObject = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -828,11 +1018,24 @@ async function startCamera() {
       },
       audio: false,
     });
-    await video.play();
+
+    try {
+      await video.play();
+    } catch (playError) {
+      console.warn("video.play() blocked:", playError);
+      statusText.textContent = "Camera preview ready — click Camera if the feed stays black.";
+    }
+
+    statusText.textContent = "Loading hand model…";
+    handLandmarker = await createHandLandmarker();
+
     mediaPipeReady = true;
     cameraStarting = false;
+    cameraButton.disabled = false;
     mode = "Tracking";
-    statusText.textContent = connected ? "Camera tracking active through proxy." : "Camera ready, socket offline.";
+    statusText.textContent = connected
+      ? "Camera tracking active through proxy."
+      : "Camera active. Proxy offline — samples queue when connected.";
 
     if (!visionLoopStarted) {
       visionLoopStarted = true;
@@ -841,7 +1044,10 @@ async function startCamera() {
   } catch (error) {
     cameraStarting = false;
     mediaPipeReady = false;
+    cameraButton.disabled = false;
+    stopCameraTracking();
     statusText.textContent = `Camera unavailable: ${error.message}`;
+    console.error("startCamera failed:", error);
   }
 }
 
@@ -852,12 +1058,15 @@ function stopCameraTracking() {
     }
     video.srcObject = null;
   }
+  handLandmarker = null;
   mediaPipeReady = false;
   cameraStarting = false;
+  visionLoopStarted = false;
   lastVideoTime = -1;
   leftMeter.value = 0.5;
   rightMeter.value = 0.5;
   gestureStateText.textContent = "NEUTRAL";
+  cameraButton.disabled = false;
 }
 
 function trackHands() {
@@ -866,6 +1075,8 @@ function trackHands() {
       lastVideoTime = video.currentTime;
       const result = handLandmarker.detectForVideo(video, performance.now());
       const hands = orderedHands(result);
+      const now = performance.now();
+      localGesture.process(hands, now);
       const sample = handSample(hands);
       sendHandSample(sample, { record: true });
       updateHandMeters(sample);
@@ -903,16 +1114,15 @@ function handSample(hands) {
   return sample;
 }
 
-function sendHandSample(sample, { record = true } = {}) {
+function sendHandSample(sample, { record = true, traceAtMs } = {}) {
   const sent = sendTrackedMessage(
     {
       type: "hands",
       leftY: sample.leftY,
       rightY: sample.rightY,
       handCount: sample.handCount,
-      clientTime: Date.now(),
     },
-    { record },
+    { record, traceAtMs },
   );
 
   if (!sent) {
@@ -1086,13 +1296,19 @@ function landmarkToPreviewPoint(landmark, overlaySize) {
   };
 }
 
+function kickoffLocalRun() {
+  applyLocalFlap();
+  sendTrackedMessage({ type: "flap", source: "manual" }, { record: false });
+}
+
 function startSussyScript() {
   stopCameraTracking();
   stopScript();
   restartRun({ clearRecording: false });
+  kickoffLocalRun();
 
   const controller = {
-    name: "sussy solve",
+    name: "sussy motion",
     stopped: false,
     timer: null,
     stop() {
@@ -1104,13 +1320,12 @@ function startSussyScript() {
   };
   scriptController = controller;
   scriptStateText.textContent = controller.name;
-  statusText.textContent = "Running deterministic anti-cheat bait.";
+  statusText.textContent =
+    "Sussy motion only (hands) — trips anti-cheat, does not clear pipes. Use Pipe solver to win.";
   mode = "Script";
 
   const periodMs = 240;
   const sampleIntervalMs = 1000 / 60;
-  const amplitude = 0.19;
-  const centerHeight = 0.57;
   const startedAt = performance.now();
 
   const tick = () => {
@@ -1121,9 +1336,8 @@ function startSussyScript() {
     const elapsed = performance.now() - startedAt;
     const phase = ((elapsed % periodMs) / periodMs) * 2;
     const triangle = phase < 1 ? phase * 2 - 1 : 3 - phase * 2;
-    const offset = amplitude * triangle;
-    const leftHeight = clamp(centerHeight + offset, 0.08, 0.92);
-    const rightHeight = clamp(centerHeight - offset, 0.08, 0.92);
+    const leftHeight = clamp(0.57 + 0.19 * triangle, 0.08, 0.92);
+    const rightHeight = clamp(0.57 - 0.19 * triangle, 0.08, 0.92);
     const sample = {
       leftY: 1 - leftHeight,
       rightY: 1 - rightHeight,
@@ -1140,18 +1354,13 @@ function startSussyScript() {
   controller.timer = window.setTimeout(tick, 120);
 }
 
-function startGoodReplay() {
-  if (!trace || !trace.events.length) {
-    statusText.textContent = "Good replay needs a recorded or imported trace first.";
-    return;
-  }
-
+function playTraceEvents(events, { name, claimScore, onDone } = {}) {
   stopCameraTracking();
   stopScript();
   restartRun({ clearRecording: false });
 
   const controller = {
-    name: "good replay",
+    name,
     stopped: false,
     timers: [],
     stop() {
@@ -1164,11 +1373,10 @@ function startGoodReplay() {
   };
   scriptController = controller;
   scriptStateText.textContent = controller.name;
-  statusText.textContent = "Replaying recorded trace.";
   mode = "Replay";
 
-  for (const event of trace.events) {
-    if (event.message.type === "restart") {
+  for (const event of events) {
+    if (event.message?.type === "restart") {
       continue;
     }
 
@@ -1176,21 +1384,79 @@ function startGoodReplay() {
       if (controller.stopped) {
         return;
       }
-      replayTraceEvent(event.message);
+      replayTraceEvent(event);
     }, event.atMs);
     controller.timers.push(timer);
   }
 
+  const lastAtMs = events.at(-1)?.atMs || 0;
   const finalTimer = window.setTimeout(() => {
-    if (!controller.stopped) {
-      statusText.textContent = "Good replay finished.";
-      stopScript();
+    if (controller.stopped) {
+      return;
     }
-  }, (trace.events.at(-1)?.atMs || 0) + 80);
+    stopScript();
+    const resolvedClaim = Number(claimScore ?? state.score);
+    if (resolvedClaim > verifyScoreThreshold()) {
+      statusText.textContent = `Replay done. Verifying score ${resolvedClaim}…`;
+      submitRunForVerification(resolvedClaim);
+    } else {
+      statusText.textContent = `${name} finished (local score ${state.score}).`;
+    }
+    onDone?.({ score: state.score, claimScore: resolvedClaim });
+  }, lastAtMs + 500);
   controller.timers.push(finalTimer);
 }
 
-function replayTraceEvent(message) {
+function startGoodReplay() {
+  if (!trace || !trace.events.length) {
+    statusText.textContent = "Good replay needs a recorded or imported trace first.";
+    return;
+  }
+
+  statusText.textContent = "Replaying recorded trace.";
+  playTraceEvents(trace.events, {
+    name: "good replay",
+    claimScore: trace.claimScore ?? trace.score,
+  });
+}
+
+function startPipeSolverScript() {
+  stopCameraTracking();
+  stopScript();
+  restartRun({ clearRecording: false });
+  scriptStateText.textContent = "Computing jumps from deterministic pipe layout…";
+  mode = "Script";
+
+  window.setTimeout(() => {
+    try {
+      const target = targetWinScore();
+      const built = buildSolveTrace({
+        targetScore: target,
+        overshoot: 1,
+        motion: "camouflage",
+      });
+
+      statusText.textContent =
+        `Solver planned ${built.flapSchedule.length} flaps (sim ${built.score}, claim ${built.claimScore}). Replaying…`;
+
+      playTraceEvents(built.events, {
+        name: "pipe solver",
+        claimScore: built.claimScore,
+        onDone: () => {
+          console.log("Flap schedule", built.flapSchedule);
+        },
+      });
+    } catch (error) {
+      statusText.textContent = `Pipe solver failed: ${error.message}`;
+      console.error(error);
+    }
+  }, 0);
+}
+
+function replayTraceEvent(event) {
+  const message = event.message ?? event;
+  const traceAtMs = event.atMs;
+
   if (message.type === "hands") {
     const sample = {
       leftY: message.leftY,
@@ -1199,16 +1465,50 @@ function replayTraceEvent(message) {
     };
     updateHandMeters(sample);
     drawSampleOverlay(sample);
-    sendHandSample(sample, { record: false });
+    sendHandSample(sample, { record: false, traceAtMs });
     return;
   }
 
   if (message.type === "flap") {
-    sendFlap(message.source || "gesture", { record: false });
+    applyLocalFlap();
+    sendTrackedMessage(
+      { type: "flap", source: message.source || "manual" },
+      { record: false, traceAtMs },
+    );
+    sentFlaps += 1;
+    flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
     return;
   }
 
-  sendTrackedMessage({ ...message, clientTime: Date.now() }, { record: false });
+  sendTrackedMessage(message, { record: false, traceAtMs });
+}
+
+async function loadSolvePackTrace() {
+  const response = await fetch("/fixtures/solve-pack.json", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`fixture missing (${response.status}) — run pnpm solve:build-pack`);
+  }
+  const payload = await response.json();
+  if (!isTrace(payload)) {
+    throw new Error("solve-pack.json is not a valid trace.");
+  }
+  trace = snapshotRecording(payload, payload.result || "solve-pack");
+  saveTrace(trace);
+  restoreTraceState();
+  return trace;
+}
+
+async function startSolvePackReplay() {
+  try {
+    await loadSolvePackTrace();
+    statusText.textContent = "Loaded solve-pack.json.";
+    playTraceEvents(trace.events, {
+      name: "solve pack",
+      claimScore: trace.claimScore ?? trace.score ?? targetWinScore(),
+    });
+  } catch (error) {
+    statusText.textContent = error.message;
+  }
 }
 
 function stopScript() {
@@ -1383,6 +1683,12 @@ stopScriptButton.addEventListener("click", () => {
 });
 runSussyButton.addEventListener("click", startSussyScript);
 runGoodButton.addEventListener("click", startGoodReplay);
+if (runPipeSolverButton) {
+  runPipeSolverButton.addEventListener("click", startPipeSolverScript);
+}
+if (runSolvePackButton) {
+  runSolvePackButton.addEventListener("click", startSolvePackReplay);
+}
 exportTraceButton.addEventListener("click", exportTrace);
 importTraceButton.addEventListener("click", () => importTraceInput.click());
 importTraceInput.addEventListener("change", async () => {

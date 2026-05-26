@@ -1,56 +1,87 @@
 # Solve Lab
 
-Local tooling to record human input traces, replay them against the real backend, and debug anti-cheat behavior.
+Local tooling to record hand loops, build verify-ready traces, replay against the backend, and debug anti-cheat — without using the production frontend.
 
 ## Run
 
 ```sh
-node solve/server.js
-# or
-pnpm start:solve
+pnpm start:backend   # terminal 1 — game authority on :8787
+pnpm start:solve     # terminal 2 — proxy UI on :4180
 ```
 
-Open `http://127.0.0.1:4180`.
+Open `http://127.0.0.1:4180`. The solve UI proxies WebSocket traffic to the backend (default `ws://127.0.0.1:8787/ws`).
 
-The solve server proxies browser WebSocket traffic to the game backend (default `ws://127.0.0.1:8787/ws`) and logs every outbound message.
+The solve client runs **local physics** (`/shared/game-core.js`), full **GestureInterpreter**, and submits **`finish`** when a run ends above the verify threshold. Traces record **hands only** by default (server derives flaps on replay).
 
-## Features
+**Camera** starts on page load (no need to wait for the proxy). Open `http://127.0.0.1:4180` — not `file://`. Click **Camera** if the feed stays black after granting permission. MediaPipe falls back from GPU to CPU automatically.
 
-* **Proxy + event log** — inspect `hands`, `flap`, `restart`, and `finish` traffic in the UI.
-* **Manual camera play** — same path as production; records a trace into browser local storage.
-* **Sussy solve** — deterministic oscillating hand heights; should accumulate anti-cheat suspicion on replay verify.
-* **Good solve replay** — replays an exported/imported human trace, then submits `finish` for server verification.
+## Script-first solve (recommended for 67)
 
-## Trace format
-
-Traces are JSON objects with an `events` array. Each entry has `atMs` (offset from run start) and `message` (`hands`, `flap`, or `restart`). Brief `leftY` / `rightY` dropouts in camera traces are normal.
-
-* Recording: play through the solve UI with the camera; the latest trace is saved to local storage on game over.
-* Export / import: buttons in the solve UI, or use the CLI below.
-
-## CLI replay
-
-Requires the backend running (`pnpm start:backend`).
+### 1. Record a seamless hand loop
 
 ```sh
-pnpm simulate:sussy
-pnpm simulate:human
-pnpm simulate:trace
-# or any exported file:
-node scripts/simulate-hands.mjs trace /path/to/67-trace.json
+pnpm solve:record-loop
+# → scripts/fixtures/loop.json (~3.2s, start ≈ end for tiling)
 ```
 
-After replay, the CLI sends `finish` with `SIMULATE_CLAIMED_SCORE` (default `WIN_SCORE` / 67 from `shared/game-core.js`) so the server replays the session log when the claim is above `VERIFY_SCORE_THRESHOLD` (50).
+### 2. Build a full solve pack (hands + manual flaps, sim-tested to 67)
 
-## Backend alignment
+```sh
+pnpm solve:build-pack
+# → scripts/fixtures/solve-pack.json (~99s sim time)
+```
 
-The production backend (`CLIENT_SIM=true` by default) does not simulate physics during play — it only logs inputs. Verification happens on `finish` when the claimed score is **> 50**. The flag requires a verified replay score **≥ 67**.
+Uses a gap-following bot locally; tiles your loop as continuous background hand motion.
 
-Useful env vars when testing:
+### 3. Replay + verify on the backend
+
+```sh
+pnpm simulate:trace
+# or with faster wall-clock (same sim timeline):
+TRACE_SCALE=0.95 pnpm simulate:trace
+```
+
+Set `SIMULATE_CLAIMED_SCORE=67` (default). Requires backend running.
+
+### Transform traces
+
+```sh
+node scripts/transform-trace.mjs scripts/fixtures/solve-pack.json --hands-only -o out.json
+node scripts/transform-trace.mjs in.json --tile scripts/fixtures/loop.json --duration 120000 -o tiled.json
+node scripts/transform-trace.mjs in.json --scale 0.95 -o faster.json
+```
 
 | Variable | Purpose |
 |----------|---------|
+| `TRACE_SCALE` | Compress `atMs` during `simulate-hands trace` replay |
+| `SIMULATE_CLAIMED_SCORE` | Score passed to `finish` (default `67`) |
 | `VERIFY_SCORE_THRESHOLD` | Minimum claim before replay (default `50`) |
-| `SIMULATE_CLAIMED_SCORE` | Score the CLI passes to `finish` |
+| `SOLVE_MAX_MS` | Max sim time for `build-solve-pack` |
 | `DISABLE_ANTI_CHEAT` | Skip heuristics (dev only) |
-| `TARGET_WS_URL` | Alternate backend WebSocket URL |
+
+## Solve UI
+
+* **Proxy + event log** — inspect `hands`, `flap`, `restart`, `finish`
+* **Camera play** — MediaPipe + local sim; records hands-only traces
+* **Sussy motion** — periodic hands only (anti-cheat bait); starts local run, does not clear pipes
+* **Pipe solver** — deterministic pipe RNG + gap-targeted flaps (`shared/flap-solver.js`), verifies 67
+* **Good replay** — replays an imported trace
+* **Run solve pack** — loads `/fixtures/solve-pack.json` (from `pnpm solve:build-pack`)
+
+## Trace format
+
+```json
+{
+  "version": 1,
+  "events": [
+    { "atMs": 0, "message": { "type": "hands", "leftY": 0.43, "rightY": 0.57, "handCount": 2 } },
+    { "atMs": 300, "message": { "type": "flap", "source": "manual" } }
+  ]
+}
+```
+
+Brief `leftY` / `rightY` dropouts in camera traces are fine. Prefer **hands-only** for packs built with manual flaps so the server is the single flap authority during gesture-derived runs; packs from `build-solve-pack` include explicit `manual` flaps.
+
+## Backend alignment
+
+`CLIENT_SIM=true`: server logs inputs during play. Verification on `finish` when claimed score **> 50**. Flag when replay score **≥ 67** and matches the claim.

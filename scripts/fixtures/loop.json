@@ -1,0 +1,1750 @@
+{
+  "version": 1,
+  "createdAt": "2026-05-26T09:47:13.112Z",
+  "target": "ws://127.0.0.1:8787/ws",
+  "startedAt": null,
+  "completedAt": "2026-05-26T09:47:13.113Z",
+  "result": "loop",
+  "score": 0,
+  "handSamples": 193,
+  "flaps": 0,
+  "events": [
+    {
+      "atMs": 0,
+      "message": {
+        "type": "hands",
+        "leftY": 0.537238413793161,
+        "rightY": 0.34276158620683894,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 16.666666666666668,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5322382766693889,
+        "rightY": 0.34776172333061095,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 33.333333333333336,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4963735926133368,
+        "rightY": 0.3836264073866631,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 50,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4905264550843724,
+        "rightY": 0.38947354491562747,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 66.66666666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4413123181900186,
+        "rightY": 0.4386876818099813,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 83.33333333333334,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4174795065927225,
+        "rightY": 0.4625204934072774,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 100.00000000000001,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4041367798447244,
+        "rightY": 0.4758632201552755,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 116.66666666666669,
+      "message": {
+        "type": "hands",
+        "leftY": 0.399277830850735,
+        "rightY": 0.4807221691492649,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 133.33333333333334,
+      "message": {
+        "type": "hands",
+        "leftY": 0.37458487330461165,
+        "rightY": 0.5054151266953882,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 150,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3468066748505212,
+        "rightY": 0.5331933251494787,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 166.66666666666666,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3384061424749386,
+        "rightY": 0.5415938575250613,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 183.33333333333331,
+      "message": {
+        "type": "hands",
+        "leftY": 0.33963493846199966,
+        "rightY": 0.5403650615380002,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 199.99999999999997,
+      "message": {
+        "type": "hands",
+        "leftY": 0.31865656398496245,
+        "rightY": 0.5613434360150376,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 216.66666666666663,
+      "message": {
+        "type": "hands",
+        "leftY": 0.26726143602957686,
+        "rightY": 0.612738563970423,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 233.3333333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.24928276044477526,
+        "rightY": 0.6307172395552246,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 249.99999999999994,
+      "message": {
+        "type": "hands",
+        "leftY": 0.23168623121101306,
+        "rightY": 0.6483137687889868,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 266.66666666666663,
+      "message": {
+        "type": "hands",
+        "leftY": 0.2262446658505778,
+        "rightY": 0.6537553341494221,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 283.3333333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 300,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 316.6666666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 333.33333333333337,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 350.00000000000006,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 366.66666666666674,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 383.3333333333334,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 400.0000000000001,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 416.6666666666668,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 433.3333333333335,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.9177108095077602,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 450.00000000000017,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.9193041621612849,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 466.66666666666686,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.9120110330305256,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 483.33333333333354,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.893625918383516,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 500.0000000000002,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8680493674830185,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 516.6666666666669,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8370429793631038,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 533.3333333333335,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8262389410028275,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 550.0000000000001,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8116685645996363,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 566.6666666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.08673269467321565,
+        "rightY": 0.7932673053267842,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 583.3333333333334,
+      "message": {
+        "type": "hands",
+        "leftY": 0.10544257617963737,
+        "rightY": 0.7745574238203625,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 600,
+      "message": {
+        "type": "hands",
+        "leftY": 0.1135757901611848,
+        "rightY": 0.7664242098388151,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 616.6666666666666,
+      "message": {
+        "type": "hands",
+        "leftY": 0.15419716289773677,
+        "rightY": 0.7258028371022631,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 633.3333333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.18727020934314464,
+        "rightY": 0.6927297906568552,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 649.9999999999999,
+      "message": {
+        "type": "hands",
+        "leftY": 0.20252348949806687,
+        "rightY": 0.677476510501933,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 666.6666666666665,
+      "message": {
+        "type": "hands",
+        "leftY": 0.21129209867867482,
+        "rightY": 0.6687079013213251,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 683.3333333333331,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6667327232215949,
+        "rightY": 0.21326727677840496,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 699.9999999999998,
+      "message": {
+        "type": "hands",
+        "leftY": 0.622062183950947,
+        "rightY": 0.25793781604905286,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 716.6666666666664,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6100639713568465,
+        "rightY": 0.26993602864315336,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 733.333333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5826270390356472,
+        "rightY": 0.29737296096435273,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 749.9999999999997,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5802363573483431,
+        "rightY": 0.2997636426516568,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 766.6666666666663,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5681820603970407,
+        "rightY": 0.3118179396029592,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 783.3333333333329,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5469304563284547,
+        "rightY": 0.3330695436715452,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 799.9999999999995,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5380494562012499,
+        "rightY": 0.34195054379875,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 816.6666666666662,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5086939832458356,
+        "rightY": 0.3713060167541643,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 833.3333333333328,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4874541350385917,
+        "rightY": 0.3925458649614082,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 849.9999999999994,
+      "message": {
+        "type": "hands",
+        "leftY": 0.44649823512616627,
+        "rightY": 0.43350176487383363,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 866.6666666666661,
+      "message": {
+        "type": "hands",
+        "leftY": 0.42457776781322565,
+        "rightY": 0.45542223218677425,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 883.3333333333327,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4361049581375832,
+        "rightY": 0.4438950418624167,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 899.9999999999993,
+      "message": {
+        "type": "hands",
+        "leftY": 0.38996087209374,
+        "rightY": 0.4900391279062599,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 916.666666666666,
+      "message": {
+        "type": "hands",
+        "leftY": 0.38252000664829633,
+        "rightY": 0.49747999335170356,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 933.3333333333326,
+      "message": {
+        "type": "hands",
+        "leftY": 0.37334569236217496,
+        "rightY": 0.5066543076378249,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 949.9999999999992,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3552398489638934,
+        "rightY": 0.5247601510361065,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 966.6666666666658,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3436385870989842,
+        "rightY": 0.5363614129010157,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 983.3333333333325,
+      "message": {
+        "type": "hands",
+        "leftY": 0.2906141619318323,
+        "rightY": 0.5893858380681676,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 999.9999999999991,
+      "message": {
+        "type": "hands",
+        "leftY": 0.30669407114143277,
+        "rightY": 0.5733059288585671,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1016.6666666666657,
+      "message": {
+        "type": "hands",
+        "leftY": 0.2549524441006208,
+        "rightY": 0.6250475558993791,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1033.3333333333323,
+      "message": {
+        "type": "hands",
+        "leftY": 0.24058359925293304,
+        "rightY": 0.6394164007470668,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1049.999999999999,
+      "message": {
+        "type": "hands",
+        "leftY": 0.23649476462118346,
+        "rightY": 0.6435052353788164,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1066.6666666666658,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1083.3333333333326,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1099.9999999999993,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1116.666666666666,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1133.3333333333328,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1149.9999999999995,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1166.6666666666663,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1183.333333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1199.9999999999998,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1216.6666666666665,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1233.3333333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1250,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.9199198322109312,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1266.6666666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.9107343478755876,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1283.3333333333335,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8783431126948715,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1300.0000000000002,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8535259835592226,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1316.666666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8375735200883061,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1333.3333333333337,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8392366454090581,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1350.0000000000005,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8288332225984036,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1366.6666666666672,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8274013707042231,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1383.333333333334,
+      "message": {
+        "type": "hands",
+        "leftY": 0.08995073752897076,
+        "rightY": 0.7900492624710291,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1400.0000000000007,
+      "message": {
+        "type": "hands",
+        "leftY": 0.09198554233560108,
+        "rightY": 0.7880144576643988,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1416.6666666666674,
+      "message": {
+        "type": "hands",
+        "leftY": 0.11953424613327968,
+        "rightY": 0.7604657538667202,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1433.3333333333342,
+      "message": {
+        "type": "hands",
+        "leftY": 0.14980102466248713,
+        "rightY": 0.7301989753375128,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1450.000000000001,
+      "message": {
+        "type": "hands",
+        "leftY": 0.16341030109927346,
+        "rightY": 0.7165896989007264,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1466.6666666666677,
+      "message": {
+        "type": "hands",
+        "leftY": 0.14834919037975214,
+        "rightY": 0.7316508096202478,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1483.3333333333344,
+      "message": {
+        "type": "hands",
+        "leftY": 0.15710672659038893,
+        "rightY": 0.722893273409611,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1500.0000000000011,
+      "message": {
+        "type": "hands",
+        "leftY": 0.17914568427613808,
+        "rightY": 0.7008543157238618,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1516.6666666666679,
+      "message": {
+        "type": "hands",
+        "leftY": 0.21926550349308538,
+        "rightY": 0.6607344965069145,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1533.3333333333346,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6636468596705245,
+        "rightY": 0.2163531403294754,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1550.0000000000014,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6529059822018685,
+        "rightY": 0.22709401779813143,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1566.666666666668,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6297595200924115,
+        "rightY": 0.25024047990758835,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1583.3333333333348,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6008388287768097,
+        "rightY": 0.2791611712231902,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1600.0000000000016,
+      "message": {
+        "type": "hands",
+        "leftY": 0.583048779271804,
+        "rightY": 0.2969512207281959,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1616.6666666666683,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5968185120557667,
+        "rightY": 0.28318148794423315,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1633.333333333335,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5772027902371899,
+        "rightY": 0.30279720976281,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1650.0000000000018,
+      "message": {
+        "type": "hands",
+        "leftY": 0.553764776291898,
+        "rightY": 0.3262352237081019,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1666.6666666666686,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5495245417561935,
+        "rightY": 0.3304754582438064,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1683.3333333333353,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5290560506596269,
+        "rightY": 0.350943949340373,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1700.000000000002,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5298355906353788,
+        "rightY": 0.3501644093646211,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1716.6666666666688,
+      "message": {
+        "type": "hands",
+        "leftY": 0.489535781652102,
+        "rightY": 0.3904642183478979,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1733.3333333333355,
+      "message": {
+        "type": "hands",
+        "leftY": 0.48590994538724286,
+        "rightY": 0.39409005461275703,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1750.0000000000023,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4667232332520963,
+        "rightY": 0.4132767667479036,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1766.666666666669,
+      "message": {
+        "type": "hands",
+        "leftY": 0.46062853095189493,
+        "rightY": 0.41937146904810496,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1783.3333333333358,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4322043408138425,
+        "rightY": 0.4477956591861574,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1800.0000000000025,
+      "message": {
+        "type": "hands",
+        "leftY": 0.41303685166092374,
+        "rightY": 0.46696314833907615,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1816.6666666666692,
+      "message": {
+        "type": "hands",
+        "leftY": 0.40407664209330685,
+        "rightY": 0.47592335790669305,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1833.333333333336,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3871681571309522,
+        "rightY": 0.4928318428690477,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1850.0000000000027,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3871582463643999,
+        "rightY": 0.4928417536356,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1866.6666666666695,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3663616032743797,
+        "rightY": 0.5136383967256202,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1883.3333333333362,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3499442400586248,
+        "rightY": 0.5300557599413751,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1900.000000000003,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3143595881148116,
+        "rightY": 0.5656404118851883,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1916.6666666666697,
+      "message": {
+        "type": "hands",
+        "leftY": 0.32750486486566377,
+        "rightY": 0.5524951351343361,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1933.3333333333364,
+      "message": {
+        "type": "hands",
+        "leftY": 0.28521062959467625,
+        "rightY": 0.5947893704053236,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1950.0000000000032,
+      "message": {
+        "type": "hands",
+        "leftY": 0.2691682417324007,
+        "rightY": 0.6108317582675992,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1966.66666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.26943384006253035,
+        "rightY": 0.6105661599374695,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 1983.3333333333367,
+      "message": {
+        "type": "hands",
+        "leftY": 0.240416351697883,
+        "rightY": 0.6395836483021169,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2000.0000000000034,
+      "message": {
+        "type": "hands",
+        "leftY": 0.2615182396275506,
+        "rightY": 0.6184817603724493,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2016.6666666666702,
+      "message": {
+        "type": "hands",
+        "leftY": 0.2374464220017195,
+        "rightY": 0.6425535779982804,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2033.333333333337,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2050.0000000000036,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2066.66666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2083.3333333333367,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2100.000000000003,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2116.6666666666697,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2133.333333333336,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2150.0000000000027,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2166.6666666666692,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2183.3333333333358,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2200.0000000000023,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2216.666666666669,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2233.3333333333353,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2250.000000000002,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.9160222119452684,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2266.6666666666683,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8637824742999598,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2283.333333333335,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8704004694051265,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2300.0000000000014,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8446249495865419,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2316.666666666668,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8434209725450783,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2333.3333333333344,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8294580829477414,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2350.000000000001,
+      "message": {
+        "type": "hands",
+        "leftY": 0.09674802014786277,
+        "rightY": 0.7832519798521371,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2366.6666666666674,
+      "message": {
+        "type": "hands",
+        "leftY": 0.13066470759942495,
+        "rightY": 0.749335292400575,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2383.333333333334,
+      "message": {
+        "type": "hands",
+        "leftY": 0.11330127425353165,
+        "rightY": 0.7666987257464682,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2400.0000000000005,
+      "message": {
+        "type": "hands",
+        "leftY": 0.13286745660639332,
+        "rightY": 0.7471325433936066,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2416.666666666667,
+      "message": {
+        "type": "hands",
+        "leftY": 0.14100460877182686,
+        "rightY": 0.738995391228173,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2433.3333333333335,
+      "message": {
+        "type": "hands",
+        "leftY": 0.16266903234957353,
+        "rightY": 0.7173309676504264,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2450,
+      "message": {
+        "type": "hands",
+        "leftY": 0.1857810361977893,
+        "rightY": 0.6942189638022106,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2466.6666666666665,
+      "message": {
+        "type": "hands",
+        "leftY": 0.18244274277230965,
+        "rightY": 0.6975572572276902,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2483.333333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.19803495139645488,
+        "rightY": 0.681965048603545,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2499.9999999999995,
+      "message": {
+        "type": "hands",
+        "leftY": 0.22755131194038225,
+        "rightY": 0.6524486880596176,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2516.666666666666,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6211698419742869,
+        "rightY": 0.25883015802571296,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2533.3333333333326,
+      "message": {
+        "type": "hands",
+        "leftY": 0.6353361740214605,
+        "rightY": 0.24466382597853942,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2549.999999999999,
+      "message": {
+        "type": "hands",
+        "leftY": 0.60073074035226,
+        "rightY": 0.27926925964773985,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2566.6666666666656,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5827962593831382,
+        "rightY": 0.2972037406168617,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2583.333333333332,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5824048765582495,
+        "rightY": 0.29759512344175043,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2599.9999999999986,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5474520235451603,
+        "rightY": 0.3325479764548396,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2616.666666666665,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5613341561384435,
+        "rightY": 0.3186658438615564,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2633.3333333333317,
+      "message": {
+        "type": "hands",
+        "leftY": 0.509632735678288,
+        "rightY": 0.37036726432171185,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2649.999999999998,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5142850402267991,
+        "rightY": 0.3657149597732008,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2666.6666666666647,
+      "message": {
+        "type": "hands",
+        "leftY": 0.5030573954067736,
+        "rightY": 0.37694260459322626,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2683.333333333331,
+      "message": {
+        "type": "hands",
+        "leftY": 0.47910708741515884,
+        "rightY": 0.40089291258484105,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2699.9999999999977,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4642410896198841,
+        "rightY": 0.4157589103801158,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2716.6666666666642,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4708046548030559,
+        "rightY": 0.409195345196944,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2733.3333333333308,
+      "message": {
+        "type": "hands",
+        "leftY": 0.4406849186193621,
+        "rightY": 0.4393150813806378,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2749.9999999999973,
+      "message": {
+        "type": "hands",
+        "leftY": 0.418357500414706,
+        "rightY": 0.4616424995852939,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2766.666666666664,
+      "message": {
+        "type": "hands",
+        "leftY": 0.424114140040324,
+        "rightY": 0.4558858599596759,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2783.3333333333303,
+      "message": {
+        "type": "hands",
+        "leftY": 0.406230716670687,
+        "rightY": 0.4737692833293129,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2799.999999999997,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3924901164830964,
+        "rightY": 0.4875098835169035,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2816.6666666666633,
+      "message": {
+        "type": "hands",
+        "leftY": 0.37150661210180647,
+        "rightY": 0.5084933878981934,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2833.33333333333,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3554200902934893,
+        "rightY": 0.5245799097065106,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2849.9999999999964,
+      "message": {
+        "type": "hands",
+        "leftY": 0.3292508459926561,
+        "rightY": 0.5507491540073438,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2866.666666666663,
+      "message": {
+        "type": "hands",
+        "leftY": 0.319424746429007,
+        "rightY": 0.5605752535709929,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2883.3333333333294,
+      "message": {
+        "type": "hands",
+        "leftY": 0.2825923081423539,
+        "rightY": 0.597407691857646,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2899.999999999996,
+      "message": {
+        "type": "hands",
+        "leftY": 0.27979696184849634,
+        "rightY": 0.6002030381515036,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2916.6666666666624,
+      "message": {
+        "type": "hands",
+        "leftY": 0.267550923429974,
+        "rightY": 0.6124490765700259,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2933.333333333329,
+      "message": {
+        "type": "hands",
+        "leftY": 0.26199607736273334,
+        "rightY": 0.6180039226372666,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2949.9999999999955,
+      "message": {
+        "type": "hands",
+        "leftY": 0.23338974837216375,
+        "rightY": 0.6466102516278361,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2966.666666666662,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2983.3333333333285,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 2999.999999999995,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3016.6666666666615,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3033.333333333328,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3049.9999999999945,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3066.666666666661,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3083.3333333333276,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.92,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3099.999999999994,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.9130402785591072,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3116.6666666666606,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.901446020861385,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3133.333333333327,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8811954646827349,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3149.9999999999936,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.875715941917793,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3166.66666666666,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8646293718110871,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3183.3333333333267,
+      "message": {
+        "type": "hands",
+        "leftY": 0.07999999999999996,
+        "rightY": 0.8630662520268304,
+        "handCount": 2
+      }
+    },
+    {
+      "atMs": 3199.999999999993,
+      "message": {
+        "type": "hands",
+        "leftY": 0.537238413793161,
+        "rightY": 0.34276158620683894,
+        "handCount": 2
+      }
+    }
+  ]
+}

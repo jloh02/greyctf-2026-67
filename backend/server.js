@@ -107,6 +107,14 @@ const ANTI_CHEAT = {
     score: 14,
     cooldownMs: 2000,
   },
+  frozenHands: {
+    windowMs: 900,
+    minSamples: 20,
+    minSpanMs: 450,
+    maxRange: 1e-5,
+    score: 18,
+    cooldownMs: 2500,
+  },
 };
 
 const sockets = new Set();
@@ -395,7 +403,9 @@ class GameSocket {
 
   /** Append a replayable input event while CLIENT_SIM is active. */
   recordRunEvent(message) {
-    const atMs = performance.now() - this.runStartPerf;
+    const atMs = Number.isFinite(message.traceAtMs)
+      ? clamp(message.traceAtMs, 0, 600000)
+      : performance.now() - this.runStartPerf;
     const entry = { type: message.type, atMs };
     if (message.type === "hands") {
       entry.leftY = message.leftY;
@@ -555,7 +565,12 @@ class GameSession {
     this.playerId = playerId;
     this.best = 0;
     this.gesture = new ServerGestureInterpreter({
-      onFlap: (time) => this.flap("67 gesture", time),
+      onFlap: (time) => {
+        if (this.verifyReplay) {
+          return;
+        }
+        this.flap("67 gesture", time);
+      },
       config: GESTURE_CONFIG,
     });
     this.history = [];
@@ -568,15 +583,27 @@ class GameSession {
     this.flapTimes = [];
     this.acceptedFlapCount = 0;
     this.handSamples = [];
+    this.activeRawHands = [];
     this.antiCheatScore = 0;
     this.antiCheatLastUpdateAt = performance.now();
     this.antiCheatCooldowns = {};
     this.lastSuspicionDetail = "";
     this.lastSuspicionAt = 0;
     this.lastSuspicionKey = "";
+    if (!this.verifyReplay) {
+      this.claimedScore = 0;
+    }
     this.history = [];
     this.replaying = false;
     this.gesture.reset();
+  }
+
+  antiCheatApplies() {
+    if (DISABLE_ANTI_CHEAT || SPACE_67_KEYBOARD) {
+      return false;
+    }
+
+    return this.score > VERIFY_SCORE_THRESHOLD;
   }
 
   flap(source, actionTimeMs = performance.now()) {
@@ -651,6 +678,23 @@ class GameSession {
     };
     const telemetry = this.gesture.process(sample, sampleTime);
     this.recordHandSampleFromTelemetry(telemetry, sampleTime);
+
+    if (
+      sample.handCount >= 2 &&
+      sample.leftY !== null &&
+      sample.rightY !== null &&
+      telemetry.tracking === "active"
+    ) {
+      this.recordActiveRawHandSample(sample.leftY, sample.rightY, sampleTime);
+      const verdict = this.auditFrozenHands(sampleTime);
+      if (verdict?.blocked) {
+        this.gameOver = true;
+        this.disconnectReason = verdict.message;
+      } else if (verdict?.message) {
+        this.log(verdict.message, verdict.level ?? "warn");
+      }
+    }
+
     return telemetry.triggered;
   }
 
@@ -686,6 +730,52 @@ class GameSession {
     if (this.handSamples.length > HAND_SAMPLE_HISTORY_CAPACITY) {
       this.handSamples.shift();
     }
+  }
+
+  recordActiveRawHandSample(leftY, rightY, now) {
+    this.activeRawHands.push({ t: now, leftY, rightY });
+    const windowStart = now - ANTI_CHEAT.frozenHands.windowMs;
+    while (this.activeRawHands.length > 0 && this.activeRawHands[0].t < windowStart) {
+      this.activeRawHands.shift();
+    }
+  }
+
+  auditFrozenHands(now) {
+    if (!this.antiCheatApplies()) {
+      return null;
+    }
+
+    this.decayAntiCheatScore(now);
+
+    const windowStart = now - ANTI_CHEAT.frozenHands.windowMs;
+    const recent = this.activeRawHands.filter((sample) => sample.t >= windowStart);
+    if (recent.length < ANTI_CHEAT.frozenHands.minSamples) {
+      return null;
+    }
+
+    const spanMs = recent.at(-1).t - recent[0].t;
+    if (spanMs < ANTI_CHEAT.frozenHands.minSpanMs) {
+      return null;
+    }
+
+    const leftValues = recent.map((sample) => sample.leftY);
+    const rightValues = recent.map((sample) => sample.rightY);
+    const leftRange = Math.max(...leftValues) - Math.min(...leftValues);
+    const rightRange = Math.max(...rightValues) - Math.min(...rightValues);
+    if (
+      leftRange <= ANTI_CHEAT.frozenHands.maxRange &&
+      rightRange <= ANTI_CHEAT.frozenHands.maxRange
+    ) {
+      return this.addSuspicion(
+        ANTI_CHEAT.frozenHands.score,
+        "frozen",
+        "dual-hand tracking stayed perfectly still for too long.",
+        now,
+        ANTI_CHEAT.frozenHands.cooldownMs,
+      );
+    }
+
+    return null;
   }
 
   recordHistory(now) {
@@ -785,12 +875,7 @@ class GameSession {
   }
 
   auditFlap(source, now) {
-    if (SPACE_67_KEYBOARD || DISABLE_ANTI_CHEAT) {
-      return { blocked: false };
-    }
-
-    // Anti-cheat only applies once pipe score exceeds the verification threshold.
-    if (this.score <= VERIFY_SCORE_THRESHOLD) {
+    if (!this.antiCheatApplies()) {
       return { blocked: false };
     }
 
@@ -892,7 +977,7 @@ class GameSession {
       return GameSession.disabledAntiCheatSnapshot();
     }
 
-    if (this.score <= VERIFY_SCORE_THRESHOLD) {
+    if (!this.antiCheatApplies()) {
       return GameSession.disabledAntiCheatSnapshot();
     }
 
@@ -1040,6 +1125,7 @@ class GameSession {
     const replay = new GameSession("verify");
     replay.reset();
     replay.verifyReplay = true;
+    replay.claimedScore = claimedScore;
 
     const events = [...runLog].sort((left, right) => left.atMs - right.atMs);
     let simMs = 0;

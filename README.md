@@ -37,7 +37,7 @@ The browser runs the game simulation locally (`shared/game-core.js`) for respons
 
 - Pipe score is shown live on the client.
 - **Flag threshold:** `WIN_SCORE` (67) from `shared/game-core.js` — also sent as `constants.winScore` / `config.winScore` in `welcome`.
-- **Verification threshold:** scores strictly above `VERIFY_SCORE_THRESHOLD` (default 50). Anti-cheat heuristics apply only above that threshold during replay/live play.
+- **Verification threshold:** scores strictly above `VERIFY_SCORE_THRESHOLD` (default 50). Anti-cheat heuristics apply only above that threshold during replay/live play (cadence, gesture leadup, frozen dual-hand streams, repeated amplitude, constant velocity).
 
 **WebSocket messages (client → server)**
 

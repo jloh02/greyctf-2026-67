@@ -94,12 +94,20 @@
           <div class="panel-title">Solve scripts</div>
           <div class="script-list">
             <article class="script-card">
-              <h3>Sussy solve</h3>
+              <h3>Sussy motion</h3>
               <p>
-                Sends perfectly periodic two-hand oscillations to trip cadence and motion
-                heuristics.
+                Periodic hand oscillation for anti-cheat testing. Starts the local run but
+                does not solve pipes — no verify path.
               </p>
               <button id="runSussyButton" type="button">Run sussy</button>
+            </article>
+            <article class="script-card">
+              <h3>Pipe solver</h3>
+              <p>
+                Simulates the deterministic pipe RNG from <code>game-core</code>, plans manual
+                flaps at gap centers, and replays hands + jumps to verify 67.
+              </p>
+              <button id="runPipeSolverButton" type="button">Run pipe solver</button>
             </article>
             <article class="script-card">
               <h3>Good solve replay</h3>
@@ -107,6 +115,14 @@
                 Replays a recorded human trace. Capture a clean run first or import one below.
               </p>
               <button id="runGoodButton" type="button">Run good replay</button>
+            </article>
+            <article class="script-card">
+              <h3>Solve pack</h3>
+              <p>
+                Loads <code>scripts/fixtures/solve-pack.json</code>, replays it, and submits
+                <code>finish</code> for server verify (67).
+              </p>
+              <button id="runSolvePackButton" type="button">Run solve pack</button>
             </article>
           </div>
         </section>

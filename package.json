@@ -11,7 +11,11 @@
     "start:solve": "node solve/server.js",
     "simulate:sussy": "node scripts/simulate-hands.mjs sussy",
     "simulate:human": "node scripts/simulate-hands.mjs human",
-    "simulate:trace": "node scripts/simulate-hands.mjs trace scripts/fixtures/human-trace.json",
-    "check": "node --check backend/server.js && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js && node --check solve/server.js && node --check solve/frontend/src/app.js && node --check solve/frontend/src/gesture.js && node --check scripts/simulate-hands.mjs"
+    "simulate:loop": "node scripts/simulate-hands.mjs loop",
+    "simulate:trace": "node scripts/simulate-hands.mjs trace scripts/fixtures/solve-pack.json",
+    "solve:record-loop": "node scripts/record-loop.mjs -o scripts/fixtures/loop.json",
+    "solve:build-pack": "node scripts/build-solve-pack.mjs --tile scripts/fixtures/loop.json -o scripts/fixtures/solve-pack.json",
+    "solve:transform": "node scripts/transform-trace.mjs",
+    "check": "node --check backend/server.js && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js && node --check shared/flap-solver.js && node --check solve/server.js && node --check solve/frontend/src/app.js && node --check solve/frontend/src/gesture.js && node --check scripts/simulate-hands.mjs && node --check scripts/transform-trace.mjs && node --check scripts/record-loop.mjs && node --check scripts/build-solve-pack.mjs && node --check scripts/lib/trace-utils.mjs && node --check scripts/lib/hand-samples.mjs"
   }
 }

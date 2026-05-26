@@ -7,6 +7,8 @@ import { extname, join, normalize, resolve } from "node:path";
 const ROOT = process.cwd();
 const SOLVE_FRONTEND_ROOT = resolve(ROOT, "solve/frontend");
 const SHARED_ASSET_ROOT = resolve(ROOT, "frontend/public/assets");
+const SHARED_ROOT = resolve(ROOT, "shared");
+const FIXTURES_ROOT = resolve(ROOT, "scripts/fixtures");
 const PORT = Number(process.env.SOLVE_PORT || process.env.PORT || "4180");
 const HOST = process.env.SOLVE_HOST || process.env.HOST || "127.0.0.1";
 const DEFAULT_TARGET_WS_URL = normalizeTargetUrl(
@@ -64,6 +66,16 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname.startsWith("/shared/")) {
+    await serveStaticFrom(SHARED_ROOT, url.pathname.replace("/shared", ""), response);
+    return;
+  }
+
+  if (url.pathname.startsWith("/fixtures/")) {
+    await serveStaticFrom(FIXTURES_ROOT, url.pathname.replace("/fixtures", ""), response);
+    return;
+  }
+
   await serveStaticFrom(SOLVE_FRONTEND_ROOT, url.pathname, response);
 });
 
@@ -101,6 +113,14 @@ server.on("upgrade", (request, socket) => {
   }
 
   socket.destroy();
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[solve] uncaughtException:", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  console.error("[solve] unhandledRejection:", error);
 });
 
 server.listen(PORT, HOST, () => {
@@ -166,7 +186,7 @@ class ProxySession {
         closeCode: event.code,
         closeReason: event.reason,
       });
-      this.close(event.code || 1000, event.reason || "backend closed");
+      this.close(safeCloseCode(event.code), event.reason || "backend closed");
     });
 
     this.backend.addEventListener("error", () => {
@@ -210,7 +230,7 @@ class ProxySession {
       closeCode: code,
       closeReason: reason,
     });
-    this.close(code || 1000, reason || "client closed");
+    this.close(safeCloseCode(code), reason || "client closed");
   }
 
   close(code = 1000, reason = "closed") {
@@ -224,7 +244,12 @@ class ProxySession {
     const sendReason = safeCloseReason(reason);
 
     if (this.backend && this.backend.readyState < WebSocket.CLOSING) {
-      this.backend.close(sendCode, sendReason);
+      try {
+        this.backend.close(sendCode, sendReason);
+      } catch (error) {
+        console.warn(`[proxy ${this.id}] backend close failed: ${error.message}`);
+        this.backend.terminate();
+      }
     }
     this.client.close(sendCode, sendReason);
 
@@ -475,7 +500,7 @@ function parseClosePayload(payload) {
     return { code: 1000, reason: "closed" };
   }
   return {
-    code: payload.readUInt16BE(0),
+    code: safeCloseCode(payload.readUInt16BE(0)),
     reason: payload.subarray(2).toString("utf8"),
   };
 }
