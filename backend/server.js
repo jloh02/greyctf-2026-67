@@ -64,13 +64,13 @@ const CLIENT_SIM = parseBoolean(process.env.CLIENT_SIM, true);
 const VERIFY_SCORE_THRESHOLD = Number(process.env.VERIFY_SCORE_THRESHOLD || "50");
 const FLAG_SCORE_HINT = `psss... hearsay the score you need to hit is ${WIN_SCORE}!`;
 const GESTURE_CONFIG = {
-  crossThreshold: 0.1,
+  crossThreshold: 0.08,
   minCrossesPerFlap: 2,
   trackingGraceMs: 420,
   anchorSmoothing: 0.45,
   fastAnchorSmoothing: 0.72,
   fastMovementThreshold: 0.075,
-  jumpDebounceMs: 300,
+  jumpDebounceMs: 150,
   levelResetMs: 360,
 };
 const ANTI_CHEAT = {

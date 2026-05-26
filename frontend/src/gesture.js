@@ -1,11 +1,11 @@
 export const DEFAULT_GESTURE_CONFIG = {
-  crossThreshold: 0.1,
+  crossThreshold: 0.08,
   minCrossesPerFlap: 2,
   trackingGraceMs: 420,
   anchorSmoothing: 0.45,
   fastAnchorSmoothing: 0.72,
   fastMovementThreshold: 0.075,
-  jumpDebounceMs: 300,
+  jumpDebounceMs: 150,
   levelResetMs: 360,
 };
 
