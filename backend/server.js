@@ -34,6 +34,7 @@ const FINAL_FLAG = process.env.FINAL_FLAG || process.env.FLAG || "";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
 const FRONTEND_ROOT = resolve(process.cwd(), "frontend");
 const SHARED_ROOT = resolve(process.cwd(), "shared");
+const FIXTURES_ROOT = resolve(process.cwd(), "scripts/fixtures");
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
   [".css", "text/css; charset=utf-8"],
@@ -98,6 +99,13 @@ const ANTI_CHEAT = {
     maxCv: 0.1,
     score: 16,
     cooldownMs: 2000,
+  },
+  jitterBurst: {
+    minSamples: 10,
+    maxSpanMs: 20,
+    minMean: 0.18,
+    score: 160,
+    cooldownMs: 1500,
   },
   constantVelocity: {
     minSamples: 10,
@@ -187,6 +195,18 @@ function resolveStaticPath(pathname) {
       return null;
     }
     return sharedAbsolutePath;
+  }
+
+  if (pathname.startsWith("/fixtures/")) {
+    const fixturesRelativePath = normalize(decodeURIComponent(pathname.slice("/fixtures/".length))).replace(
+      /^(\.\.(\/|\\|$))+/,
+      "",
+    );
+    const fixturesAbsolutePath = resolve(join(FIXTURES_ROOT, fixturesRelativePath));
+    if (!fixturesAbsolutePath.startsWith(FIXTURES_ROOT)) {
+      return null;
+    }
+    return fixturesAbsolutePath;
   }
 
   let requestedPath = pathname;
@@ -875,6 +895,14 @@ class GameSession {
   }
 
   auditFlap(source, now) {
+    if (this.verifyReplay && source !== "67 gesture") {
+      return {
+        blocked: true,
+        message:
+          "Verification failed: explicit manual flaps are not valid camera-gesture evidence.",
+      };
+    }
+
     if (!this.antiCheatApplies()) {
       return { blocked: false };
     }
@@ -1031,6 +1059,28 @@ class GameSession {
     const excursionAmplitudes = recent
       .map((sample) => Math.abs(sample.delta))
       .filter((amplitude) => amplitude >= GESTURE_CONFIG.crossThreshold * 1.25);
+    const excursionSamples = recent.filter(
+      (sample) => Math.abs(sample.delta) >= GESTURE_CONFIG.crossThreshold * 1.25,
+    );
+    if (excursionSamples.length >= ANTI_CHEAT.jitterBurst.minSamples) {
+      const spanMs = excursionSamples.at(-1).t - excursionSamples[0].t;
+      const meanAmplitude = average(excursionSamples.map((sample) => Math.abs(sample.delta)));
+      if (
+        spanMs <= ANTI_CHEAT.jitterBurst.maxSpanMs &&
+        meanAmplitude >= ANTI_CHEAT.jitterBurst.minMean
+      ) {
+        const verdict = this.addSuspicion(
+          ANTI_CHEAT.jitterBurst.score,
+          "jitter",
+          "mechanical hand jitter burst before gesture flap.",
+          now,
+          ANTI_CHEAT.jitterBurst.cooldownMs,
+        );
+        if (verdict) {
+          return verdict;
+        }
+      }
+    }
     if (excursionAmplitudes.length >= ANTI_CHEAT.repeatedAmplitude.minSamples) {
       const meanAmplitude = average(excursionAmplitudes);
       const amplitudeCv = coefficientOfVariation(excursionAmplitudes);
@@ -1186,7 +1236,7 @@ class GameSession {
 
     return {
       valid,
-      blocked: Boolean(replay.disconnectReason),
+      blocked: replay.disconnectReason.startsWith("Disconnected:"),
       score,
       won,
       flag: won ? FINAL_FLAG : "",
@@ -1603,4 +1653,3 @@ function parseBoolean(value, fallback) {
   }
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
-

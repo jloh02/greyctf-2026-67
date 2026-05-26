@@ -13,6 +13,20 @@ import {
   createGameState,
   stepGameState,
 } from "/shared/game-core.js";
+import {
+  createTraceReplayer,
+  finishMessage,
+  flapMessage,
+  handsMessage,
+  restartMessage,
+  toSocketPayload,
+} from "/shared/frontend-client.js";
+import {
+  buildSuiteTrace,
+  listSolveModesByTier,
+  localSimOptionsForMode,
+} from "/shared/solve-suite.js";
+import { mockHandsFromSample } from "/shared/gesture-loop.js";
 
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
@@ -35,6 +49,12 @@ const gestureStateText = document.querySelector("#gestureState");
 const flapPulseText = document.querySelector("#flapPulse");
 const leftMeter = document.querySelector("#leftMeter");
 const rightMeter = document.querySelector("#rightMeter");
+const solveSuitePanel = document.querySelector("#solveSuitePanel");
+const solveSuiteSelect = document.querySelector("#solveSuiteSelect");
+const solveSuiteDescription = document.querySelector("#solveSuiteDescription");
+const solveSuiteResult = document.querySelector("#solveSuiteResult");
+const runSolveSuiteButton = document.querySelector("#runSolveSuiteButton");
+const stopSolveSuiteButton = document.querySelector("#stopSolveSuiteButton");
 
 const HAND_ANCHOR_MARKER_RADIUS = 12;
 const HAND_SIDE_GUIDE_TOP = 10;
@@ -91,6 +111,11 @@ let sentHandSamples = 0;
 let mode = "Connecting";
 let synthetic67LeftHigh = false;
 let pingTimer = null;
+let runTraceAtMs = null;
+let scriptController = null;
+let localSimOptions = null;
+let importedTrace = null;
+const solveSuiteEnabled = new URLSearchParams(window.location.search).has("solve");
 let syncState = {
   rttMs: 0,
   clockOffsetMs: 0,
@@ -251,14 +276,18 @@ function sendSync() {
   );
 }
 
-function sendFlap(source) {
+function currentTraceAtMs() {
+  return Number.isFinite(runTraceAtMs) ? performance.now() - runTraceAtMs : undefined;
+}
+
+function sendFlap(source, traceAtMs = currentTraceAtMs()) {
   if (!connected || socket.readyState !== WebSocket.OPEN) {
     statusText.textContent = "Flap ignored while server is offline.";
     return;
   }
 
   applyLocalFlap();
-  socket.send(JSON.stringify({ type: "flap", source, clientTime: Date.now() }));
+  socket.send(JSON.stringify(toSocketPayload(flapMessage(source), { traceAtMs })));
   sentFlaps += 1;
   flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
   mode = config.space67Keyboard ? "Keyboard" : mediaPipeReady ? "Tracking" : "Online";
@@ -314,6 +343,7 @@ function resetLocalRun() {
 }
 
 function restartRun() {
+  stopSolveScript();
   sentFlaps = 0;
   sentHandSamples = 0;
   flapPulseText.textContent = "0 samples / 0 flaps";
@@ -322,8 +352,9 @@ function restartRun() {
   resetLocalRun();
   localGesture.reset();
   hideCheatAlert();
+  runTraceAtMs = performance.now();
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "restart" }));
+    socket.send(JSON.stringify(toSocketPayload(restartMessage(), { traceAtMs: 0 })));
   }
 }
 
@@ -405,10 +436,47 @@ function updateCheatAlertFromState(antiCheat) {
   showCheatAlert(antiCheat.level, `${antiCheat.message}${scoreHint}`);
 }
 
+function appendSolveSuiteResult(text, { replace = false } = {}) {
+  if (!solveSuiteResult) {
+    return;
+  }
+  if (replace) {
+    solveSuiteResult.textContent = text;
+    return;
+  }
+  const previous = solveSuiteResult.textContent.trim();
+  solveSuiteResult.textContent = previous ? `${previous}\n${text}` : text;
+}
+
+function formatVerifiedSummary(message) {
+  const lines = [
+    "--- Verification ---",
+    `valid: ${message.valid}`,
+    `verified: ${message.verified ?? "n/a"}`,
+    `replay score: ${message.score}`,
+    `claimed: ${message.claimedScore ?? "n/a"}`,
+    `won: ${message.won ?? false}`,
+  ];
+  if (message.flag) {
+    lines.push(`flag: ${message.flag}`);
+  }
+  if (message.message) {
+    lines.push(`message: ${message.message}`);
+  }
+  if (message.antiCheat?.message) {
+    lines.push(`anti-cheat: ${message.antiCheat.level} — ${message.antiCheat.message}`);
+  }
+  return lines.join("\n");
+}
+
 function applyVerifiedResult(message) {
   verificationPending = false;
+  appendSolveSuiteResult(formatVerifiedSummary(message));
 
   if (!message.valid) {
+    sessionMeta.won = false;
+    sessionMeta.flag = "";
+    updateFlagBanner();
     showCheatAlert("blocked", message.message || "Run verification failed.");
     statusText.textContent = message.message || "Run verification failed.";
     return;
@@ -418,8 +486,12 @@ function applyVerifiedResult(message) {
   if (message.won) {
     sessionMeta.won = true;
     sessionMeta.flag = message.flag || "";
+  } else {
+    sessionMeta.won = false;
+    sessionMeta.flag = "";
   }
 
+  updateFlagBanner();
   hideCheatAlert();
   if (message.verified) {
     statusText.textContent = `Run verified: score ${message.score}.`;
@@ -457,7 +529,7 @@ function applyServerState(serverState) {
 
 function advanceLocalSimulation(dt) {
   if (!gameState.awaitingStart && !gameState.gameOver) {
-    stepGameState(gameState, dt, constants);
+    stepGameState(gameState, dt, constants, localSimOptions || undefined);
   }
 }
 
@@ -484,6 +556,14 @@ function hasReachedWinScore(score) {
   return score >= targetWinScore();
 }
 
+/** Show the flag banner only when the win does not require server replay. */
+function grantLocalWinIfTrusted(score) {
+  if (hasReachedWinScore(score) && !scoreNeedsVerification(score)) {
+    sessionMeta.won = true;
+    updateFlagBanner();
+  }
+}
+
 function checkRunFinished() {
   if (!gameState.gameOver || finishSubmitted) {
     return;
@@ -491,10 +571,7 @@ function checkRunFinished() {
 
   finishSubmitted = true;
   sessionMeta.best = Math.max(sessionMeta.best, gameState.score);
-
-  if (hasReachedWinScore(gameState.score)) {
-    sessionMeta.won = true;
-  }
+  grantLocalWinIfTrusted(gameState.score);
 
   if (!scoreNeedsVerification(gameState.score)) {
     return;
@@ -505,19 +582,17 @@ function checkRunFinished() {
 
 function submitRunForVerification(score) {
   if (!connected || socket.readyState !== WebSocket.OPEN) {
-    statusText.textContent = "Cannot verify run while server is offline.";
+    const offline = "Cannot verify — game socket offline.";
+    statusText.textContent = offline;
+    appendSolveSuiteResult(offline);
     return;
   }
 
+  finishSubmitted = true;
   verificationPending = true;
   statusText.textContent = "Verifying run with server...";
-  socket.send(
-    JSON.stringify({
-      type: "finish",
-      score,
-      clientTime: Date.now(),
-    }),
-  );
+  appendSolveSuiteResult(`Submitting finish (claim ${score})…`);
+  socket.send(JSON.stringify(toSocketPayload(finishMessage(score))));
 }
 
 function drawSky(sim) {
@@ -856,20 +931,12 @@ function handSample(hands) {
   return sample;
 }
 
-function sendHandSample(sample) {
+function sendHandSample(sample, traceAtMs = currentTraceAtMs()) {
   if (!connected || socket.readyState !== WebSocket.OPEN) {
     return;
   }
 
-  socket.send(
-    JSON.stringify({
-      type: "hands",
-      leftY: sample.leftY,
-      rightY: sample.rightY,
-      handCount: sample.handCount,
-      clientTime: Date.now(),
-    }),
-  );
+  socket.send(JSON.stringify(toSocketPayload(handsMessage(sample), { traceAtMs })));
   sentHandSamples += 1;
   flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
 }
@@ -1028,8 +1095,180 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function stopSolveScript() {
+  if (!scriptController) {
+    return;
+  }
+  scriptController.stop();
+  scriptController = null;
+  localSimOptions = null;
+}
+
+function populateSolveSuiteSelect() {
+  if (!solveSuiteSelect) {
+    return;
+  }
+
+  solveSuiteSelect.replaceChildren();
+  for (const group of listSolveModesByTier()) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = `Tier ${group.tier}: ${group.title}`;
+    for (const entry of group.modes) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = entry.label;
+      optgroup.appendChild(option);
+    }
+    solveSuiteSelect.appendChild(optgroup);
+  }
+  solveSuiteSelect.value = "recorded-gesture-replay";
+  updateSolveSuiteDescription();
+}
+
+function updateSolveSuiteDescription() {
+  if (!solveSuiteSelect || !solveSuiteDescription) {
+    return;
+  }
+  const tier = listSolveModesByTier().find((group) =>
+    group.modes.some((mode) => mode.id === solveSuiteSelect.value),
+  );
+  solveSuiteDescription.textContent = tier?.description || "";
+}
+
+function replayTraceEventOnFrontend(event) {
+  const { message } = event;
+  const traceAtMs = event.atMs;
+
+  if (message.type === "hands") {
+    const sample = {
+      leftY: message.leftY,
+      rightY: message.rightY,
+      handCount: message.handCount,
+    };
+    updateHandMeters(sample);
+    localGesture.process(mockHandsFromSample(sample), performance.now());
+    sendHandSample(sample, traceAtMs);
+    return;
+  }
+
+  if (message.type === "flap") {
+    sendFlap(message.source || "manual", traceAtMs);
+  }
+}
+
+function playTraceOnFrontend(events, { name, claimScore, simOptions = null, onDone } = {}) {
+  stopSolveScript();
+  stopCameraTracking();
+  localSimOptions = simOptions;
+  restartRun();
+
+  scriptController = createTraceReplayer(events, {
+    onHands: replayTraceEventOnFrontend,
+    onFlap: replayTraceEventOnFrontend,
+    onComplete: () => {
+      scriptController = null;
+      localSimOptions = null;
+      const resolvedClaim = Number(claimScore ?? gameState.score);
+      appendSolveSuiteResult(
+        `Replay done. Local score ${gameState.score}. Claim ${resolvedClaim}.`,
+      );
+      if (finishSubmitted) {
+        statusText.textContent = `${name} finished (local ${gameState.score}, claim ${resolvedClaim}).`;
+      } else if (scoreNeedsVerification(resolvedClaim)) {
+        submitRunForVerification(resolvedClaim);
+        statusText.textContent = `${name} finished (local ${gameState.score}, claim ${resolvedClaim}). Verifying…`;
+      } else {
+        grantLocalWinIfTrusted(resolvedClaim);
+        statusText.textContent = `${name} finished (local ${gameState.score}, claim ${resolvedClaim}).`;
+        appendSolveSuiteResult("Skipped verify (claim ≤ threshold).");
+      }
+      onDone?.({ score: gameState.score, claimScore: resolvedClaim });
+    },
+  });
+  mode = "Solve";
+}
+
+async function loadDefaultSolvePack() {
+  const response = await fetch("/fixtures/solve-pack.json", { cache: "no-store" });
+  if (!response.ok) {
+    return null;
+  }
+  return response.json();
+}
+
+async function runFrontendSolveMode(modeId) {
+  if (!connected) {
+    statusText.textContent = "Connect to the game server first.";
+    return;
+  }
+
+  try {
+    let trace = importedTrace;
+    if (modeId === "recorded-gesture-replay" && !trace) {
+      trace = await loadDefaultSolvePack();
+    }
+
+    const built = buildSuiteTrace(modeId, {
+      targetScore: targetWinScore(),
+      overshoot: 1,
+      trace,
+    });
+
+    const durationSec = ((built.events?.at(-1)?.atMs ?? built.simMs ?? 0) / 1000).toFixed(1);
+    appendSolveSuiteResult(
+      [
+        `Mode: ${built.mode.label}`,
+        `Planned: local=${built.score} replay-flaps=${built.replayScore ?? "n/a"} claim=${built.claimScore}`,
+        `Trace: ${built.events?.length ?? 0} events (~${durationSec}s)`,
+        built.note || "",
+        modeId !== "empty-claim" && modeId !== "no-collision-pipes" && modeId !== "no-collision-pipes-frame"
+          ? "Replaying to server… verification below when done."
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      { replace: true },
+    );
+
+    if (modeId === "empty-claim") {
+      restartRun();
+      statusText.textContent = "Empty claim: finish 67 with no inputs.";
+      window.setTimeout(() => submitRunForVerification(built.claimScore), 400);
+      return;
+    }
+
+    const simOptions = built.stepOptions ?? localSimOptionsForMode(modeId);
+
+    playTraceOnFrontend(built.events, {
+      name: built.mode.label,
+      claimScore: built.claimScore,
+      simOptions,
+    });
+  } catch (error) {
+    statusText.textContent = error.message;
+    if (solveSuiteResult) {
+      solveSuiteResult.textContent = error.message;
+    }
+  }
+}
+
+function initSolveSuitePanel() {
+  if (!solveSuiteEnabled || !solveSuitePanel) {
+    return;
+  }
+
+  solveSuitePanel.hidden = false;
+  populateSolveSuiteSelect();
+  runSolveSuiteButton?.addEventListener("click", () => {
+    runFrontendSolveMode(solveSuiteSelect.value);
+  });
+  stopSolveSuiteButton?.addEventListener("click", stopSolveScript);
+  solveSuiteSelect?.addEventListener("change", updateSolveSuiteDescription);
+}
+
 cameraButton.addEventListener("click", startCamera);
 restartButton.addEventListener("click", restartRun);
+initSolveSuitePanel();
 
 window.addEventListener("pointerdown", (event) => {
   if (event.target.closest(".controls")) {

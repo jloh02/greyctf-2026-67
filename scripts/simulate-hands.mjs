@@ -7,6 +7,7 @@
  * the session log.
  */
 import { WIN_SCORE } from "../shared/game-core.js";
+import { finishMessage, restartMessage, toSocketPayload } from "../shared/frontend-client.js";
 import { createHumanLikeSampleFactory } from "./lib/hand-samples.mjs";
 import {
   SAMPLE_INTERVAL_MS,
@@ -120,13 +121,7 @@ async function submitFinish(socket, claimedScore) {
       }
     };
     socket.addEventListener("message", onMessage);
-    socket.send(
-      JSON.stringify({
-        type: "finish",
-        score: claimedScore,
-        clientTime: Date.now(),
-      }),
-    );
+    socket.send(JSON.stringify(toSocketPayload(finishMessage(claimedScore))));
     setTimeout(() => {
       socket.removeEventListener("message", onMessage);
       resolve(null);
@@ -177,7 +172,7 @@ async function replayTrace(trace, socket) {
     `Replaying trace: ${events.length} events, ${handEvents} hand samples, ${flaps} flaps, ${(durationMs / 1000).toFixed(2)}s`,
   );
 
-  socket.send(JSON.stringify({ type: "restart" }));
+  socket.send(JSON.stringify(toSocketPayload(restartMessage(), { traceAtMs: 0 })));
 
   await new Promise((resolve) => {
     for (const entry of events) {
@@ -186,13 +181,7 @@ async function replayTrace(trace, socket) {
           return;
         }
 
-        socket.send(
-          JSON.stringify({
-            ...entry.message,
-            clientTime: Date.now(),
-            traceAtMs: entry.atMs,
-          }),
-        );
+        socket.send(JSON.stringify(toSocketPayload(entry.message, { traceAtMs: entry.atMs })));
       }, entry.atMs);
     }
 
@@ -202,7 +191,7 @@ async function replayTrace(trace, socket) {
 
 async function runSynthetic(modeName, socket, durationMs) {
   const sampleFor = createSampleGenerator(modeName);
-  socket.send(JSON.stringify({ type: "restart" }));
+  socket.send(JSON.stringify(toSocketPayload(restartMessage(), { traceAtMs: 0 })));
 
   await new Promise((resolve) => {
     let startedAt = Date.now();
@@ -216,13 +205,17 @@ async function runSynthetic(modeName, socket, durationMs) {
 
       const sample = sampleFor(elapsed);
       socket.send(
-        JSON.stringify({
-          type: "hands",
-          leftY: sample.leftY,
-          rightY: sample.rightY,
-          handCount: sample.handCount,
-          clientTime: Date.now(),
-        }),
+        JSON.stringify(
+          toSocketPayload(
+            {
+              type: "hands",
+              leftY: sample.leftY,
+              rightY: sample.rightY,
+              handCount: sample.handCount,
+            },
+            { traceAtMs: elapsed },
+          ),
+        ),
       );
 
       setTimeout(pump, sampleIntervalMs);

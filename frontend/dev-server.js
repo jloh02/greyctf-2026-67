@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PUBLIC_ROOT = resolve(__dirname);
 const SHARED_ROOT = resolve(__dirname, "..", "shared");
+const FIXTURES_ROOT = resolve(__dirname, "..", "scripts/fixtures");
 const PORT = Number(process.env.FRONTEND_PORT || process.env.PORT || "4173");
 const HOST = process.env.FRONTEND_HOST || process.env.HOST || "127.0.0.1";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
@@ -47,6 +48,33 @@ server.listen(PORT, HOST, () => {
 });
 
 async function serveStatic(pathname, response) {
+  if (pathname.startsWith("/fixtures/")) {
+    const normalizedFixturesPath = normalize(decodeURIComponent(pathname.slice("/fixtures/".length))).replace(
+      /^(\.\.(\/|\\|$))+/, "",
+    );
+    const fixturesAbsolutePath = resolve(join(FIXTURES_ROOT, normalizedFixturesPath));
+    if (!fixturesAbsolutePath.startsWith(FIXTURES_ROOT)) {
+      response.writeHead(403).end("Forbidden");
+      return;
+    }
+    try {
+      const fileStat = await stat(fixturesAbsolutePath);
+      if (!fileStat.isFile()) {
+        response.writeHead(404).end("Not found");
+        return;
+      }
+
+      response.writeHead(200, {
+        "content-type": mimeTypes.get(extname(fixturesAbsolutePath)) || "application/octet-stream",
+        "cache-control": "no-store",
+      });
+      createReadStream(fixturesAbsolutePath).pipe(response);
+    } catch {
+      response.writeHead(404).end("Not found");
+    }
+    return;
+  }
+
   if (pathname.startsWith("/shared/")) {
     const normalizedSharedPath = normalize(decodeURIComponent(pathname.slice("/shared/".length))).replace(
       /^(\.\.(\/|\\|$))+/,

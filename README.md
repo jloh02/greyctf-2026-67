@@ -91,6 +91,8 @@ pnpm start:backend
 
 Open `http://127.0.0.1:8787` (set `DIAGNOSTIC_PAGE=true` in the start script for `/diagnostics`).
 
+For the tiered solve suite on the **production UI**, add `?solve=1` (e.g. `http://127.0.0.1:8787?solve=1`) or use the solve lab at `http://127.0.0.1:4180`. Both use `shared/frontend-client.js` for the same `hands` / `flap` / `finish` wire format. Manual-flap mechanical traces are negative tests; the verify-ready solve pack uses a captured stable -> 67 -> stable gesture leadup and `source: "gesture"` jump events.
+
 **Split frontend dev server:**
 
 ```sh

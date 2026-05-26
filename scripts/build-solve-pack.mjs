@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 /**
- * Build a hands + manual-flap trace that clears WIN_SCORE locally, for replay verify.
+ * Build a gesture trace that clears WIN_SCORE in backend replay.
+ *
+ * The mechanical planner is used only to choose pipe-safe flap times. The trace
+ * sent to the server uses one stable -> 67 -> stable clip as evidence around
+ * explicit gesture-source flaps.
  */
 import { WIN_SCORE } from "../shared/game-core.js";
 import { buildSolveTrace } from "../shared/flap-solver.js";
+import { buildGestureLoopEvents } from "../shared/gesture-loop.js";
+import { buildGestureSolvePack } from "./lib/gesture-solve.mjs";
 import {
   buildTraceDocument,
-  extractHandLoop,
   loadTrace,
-  normalizeTraceEvents,
   parseArgs,
   scaleTraceEvents,
   summarizeTrace,
@@ -19,19 +23,65 @@ function main() {
   const { flags } = parseArgs(process.argv.slice(2));
   const output = flags.output || "scripts/fixtures/solve-pack.json";
   const targetScore = Number(process.env.SOLVE_TARGET_SCORE || WIN_SCORE);
-  const overshoot = Number(process.env.SOLVE_OVERSHOOT ?? "1");
+  const overshoot = Number(process.env.SOLVE_OVERSHOOT ?? "0");
   const motion = flags.motion || process.env.SOLVE_MOTION || "camouflage";
+  const strategy = flags.strategy || process.env.SOLVE_STRATEGY || "lookahead";
+  const maxSimMs = Number(process.env.SOLVE_MAX_MS || "130000");
 
+  if (flags.manual) {
+    buildManualPack({ output, targetScore, overshoot, motion, maxSimMs, flags });
+    return;
+  }
+
+  const loopTrace = flags.tile
+    ? loadTrace(flags.tile)
+    : buildTraceDocument(buildGestureLoopEvents(), { result: "synthetic-gesture-loop" });
+  const built = buildGestureSolvePack({
+    loopTrace,
+    targetScore,
+    overshoot,
+    maxSimMs,
+    strategy,
+    reverse: false,
+  });
+
+  let trace = built.trace;
+  if (flags.scale && flags.scale !== 1) {
+    trace = {
+      ...trace,
+      events: scaleTraceEvents(trace.events, flags.scale),
+    };
+  }
+
+  writeTrace(output, trace);
+  const summary = summarizeTrace(trace);
+  console.log(
+    `Built ${output}: score=${built.replay.score}/${targetScore} ` +
+      `derivedGestureFlaps=${built.replay.flaps.length} events=${summary.events} ` +
+      `duration=${(summary.durationMs / 1000).toFixed(2)}s reversed=${built.clip.reversed}`,
+  );
+  console.log(
+    `Gesture clip: trigger=${built.clip.triggerAtMs.toFixed(1)}ms ` +
+      `duration=${built.clip.durationMs.toFixed(1)}ms speeds=${built.speedPattern.join(",")}`,
+  );
+
+  if (built.replay.score < targetScore) {
+    console.error("Gesture replay score below claim target; record a cleaner clip or increase SOLVE_OVERSHOOT.");
+    process.exitCode = 1;
+  }
+}
+
+function buildManualPack({ output, targetScore, overshoot, motion, maxSimMs, flags }) {
   let loopDurationMs = 240;
   if (flags.tile) {
-    const loopEvents = extractHandLoop(normalizeTraceEvents(loadTrace(flags.tile)));
-    loopDurationMs = Math.max(240, loopEvents.at(-1)?.atMs || 240);
+    const loopTrace = loadTrace(flags.tile);
+    loopDurationMs = Math.max(240, loopTrace.events.at(-1)?.atMs || 240);
   }
 
   const built = buildSolveTrace({
     targetScore,
     overshoot,
-    maxSimMs: Number(process.env.SOLVE_MAX_MS || "130000"),
+    maxSimMs,
     motion,
     loopDurationMs,
   });
@@ -61,7 +111,7 @@ function main() {
   }
 
   if (built.replayScore < targetScore) {
-    console.error("Replay-style score below claim target; increase SOLVE_OVERSHOOT.");
+    console.error("Manual replay-style score below claim target; increase SOLVE_OVERSHOOT.");
     process.exitCode = 1;
   }
 }

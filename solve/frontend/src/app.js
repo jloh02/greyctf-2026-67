@@ -13,14 +13,29 @@ import {
   createGameState,
   stepGameState,
 } from "/shared/game-core.js";
-import { buildSolveTrace } from "/shared/flap-solver.js";
+import {
+  createTraceReplayer,
+  finishMessage,
+  flapMessage,
+  handsMessage,
+  restartMessage,
+  toSocketPayload,
+} from "/shared/frontend-client.js";
+import { createAltitudeHoldController } from "/shared/altitude-hold.js";
+import { mockHandsFromSample } from "/shared/gesture-loop.js";
+import {
+  SOLVE_MODES,
+  buildSuiteTrace,
+  listSolveModesByTier,
+  localSimOptionsForMode,
+} from "/shared/solve-suite.js";
 
 const TRACE_STORAGE_KEY = "solve-lab:last-trace";
-const RECORD_HANDS_ONLY = true;
-const MAX_LOG_EVENTS = 120;
 const MAX_RENDER_DT_SECONDS = 0.05;
 const TRACE_MIN_HAND_SAMPLES = 30;
 const TRACE_MIN_DURATION_MS = 1500;
+const CAPTURE_COUNTDOWN_MS = 3000;
+const CAPTURE_HOLD_MS = 2600;
 const PING_INTERVAL_MS = 2000;
 const SYNC_SMOOTHING = 0.2;
 const HAND_ANCHOR_MARKER_RADIUS = 12;
@@ -52,14 +67,13 @@ const connectButton = document.querySelector("#connectButton");
 const restartButton = document.querySelector("#restartButton");
 const cameraButton = document.querySelector("#cameraButton");
 const stopScriptButton = document.querySelector("#stopScriptButton");
-const runSussyButton = document.querySelector("#runSussyButton");
-const runGoodButton = document.querySelector("#runGoodButton");
-const runSolvePackButton = document.querySelector("#runSolvePackButton");
-const runPipeSolverButton = document.querySelector("#runPipeSolverButton");
+const solveSuiteSelect = document.querySelector("#solveSuiteSelect");
+const solveSuiteDescription = document.querySelector("#solveSuiteDescription");
+const solveSuiteResult = document.querySelector("#solveSuiteResult");
+const runSolveSuiteButton = document.querySelector("#runSolveSuiteButton");
 const exportTraceButton = document.querySelector("#exportTraceButton");
 const importTraceButton = document.querySelector("#importTraceButton");
 const importTraceInput = document.querySelector("#importTraceInput");
-const clearLogButton = document.querySelector("#clearLogButton");
 const video = document.querySelector("#cameraPreview");
 const handOverlay = document.querySelector("#handOverlay");
 const handCtx = handOverlay.getContext("2d");
@@ -74,11 +88,9 @@ const flapPulseText = document.querySelector("#flapPulse");
 const leftMeter = document.querySelector("#leftMeter");
 const rightMeter = document.querySelector("#rightMeter");
 const socketStateText = document.querySelector("#socketState");
-const debugSocketStateText = document.querySelector("#debugSocketState");
 const scriptStateText = document.querySelector("#scriptState");
 const traceStateText = document.querySelector("#traceState");
 const traceSummaryText = document.querySelector("#traceSummary");
-const eventLog = document.querySelector("#eventLog");
 
 const atlas = new Image();
 let atlasCanvas = null;
@@ -105,16 +117,14 @@ let verificationPending = false;
 let lastDrawAt = performance.now();
 
 const localGesture = new GestureInterpreter({
-  onFlap: () => applyLocalFlap(),
+  onFlap: () => handleGestureFlap(),
   onTelemetry: (telemetry) => {
     state.gesture = telemetry;
   },
 });
 
 let socket = null;
-let debugSocket = null;
 let connected = false;
-let debugConnected = false;
 let cameraStarting = false;
 let mediaPipeReady = false;
 let visionLoopStarted = false;
@@ -129,9 +139,10 @@ let syncState = {
   clockOffsetMs: 0,
 };
 let scriptController = null;
+let localSimOptions = null;
 let trace = loadTrace();
 let currentRecording = createEmptyTrace();
-let proxyEvents = [];
+let guidedCapture = createGuidedCaptureState();
 
 const queryBackend = new URLSearchParams(window.location.search).get("backend");
 
@@ -164,7 +175,6 @@ async function loadConfig() {
 
 function connectSockets() {
   connectGameSocket();
-  connectDebugSocket();
 }
 
 function connectGameSocket() {
@@ -238,49 +248,11 @@ function connectGameSocket() {
   });
 }
 
-function connectDebugSocket() {
-  if (debugSocket) {
-    debugSocket.close();
-  }
-
-  debugSocket = new WebSocket(debugSocketUrl());
-  debugSocketStateText.textContent = "connecting";
-
-  debugSocket.addEventListener("open", () => {
-    debugConnected = true;
-    debugSocketStateText.textContent = "online";
-  });
-
-  debugSocket.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === "debug-welcome") {
-      return;
-    }
-    pushProxyEvent(message);
-  });
-
-  debugSocket.addEventListener("close", () => {
-    debugConnected = false;
-    debugSocketStateText.textContent = "closed";
-    window.setTimeout(connectDebugSocket, 800);
-  });
-
-  debugSocket.addEventListener("error", () => {
-    debugConnected = false;
-    debugSocketStateText.textContent = "error";
-  });
-}
-
 function proxySocketUrl(target) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL(`${protocol}//${window.location.host}/ws`);
   url.searchParams.set("target", normalizeTargetUrl(target));
   return url.toString();
-}
-
-function debugSocketUrl() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/debug-ws`;
 }
 
 function startPingLoop() {
@@ -336,37 +308,31 @@ function sendControlMessage(message) {
   return true;
 }
 
-function outboundPayload(message, { traceAtMs } = {}) {
-  const payload = {
-    ...message,
-    clientTime: Date.now(),
-  };
-  if (Number.isFinite(traceAtMs)) {
-    payload.traceAtMs = traceAtMs;
-  } else if (currentRecording.startedAt !== null) {
-    payload.traceAtMs = Date.now() - currentRecording.startedAt;
+function recordingTraceAtMs() {
+  if (currentRecording.startedAt === null) {
+    return undefined;
   }
-  return payload;
+  return Date.now() - currentRecording.startedAt;
 }
 
 function sendTrackedMessage(message, { record = true, traceAtMs } = {}) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return false;
-  }
-
-  socket.send(JSON.stringify(outboundPayload(message, { traceAtMs })));
+  const resolvedTraceAtMs = Number.isFinite(traceAtMs) ? traceAtMs : recordingTraceAtMs();
   if (record) {
     recordTraceEvent(message);
   }
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+  socket.send(JSON.stringify(toSocketPayload(message, { traceAtMs: resolvedTraceAtMs })));
   return true;
 }
 
-function recordTraceEvent(message) {
+function recordTraceEvent(message, { force = false } = {}) {
   if (
-    scriptController ||
-    message.type === "ping" ||
-    message.type === "sync" ||
-    (RECORD_HANDS_ONLY && message.type === "flap")
+    !force &&
+    (scriptController ||
+      guidedCapture.phase !== "recording" ||
+      (message.type !== "hands" && message.type !== "flap"))
   ) {
     return;
   }
@@ -389,6 +355,135 @@ function recordTraceEvent(message) {
   }
 
   updateTraceSummary(currentRecording);
+}
+
+function createGuidedCaptureState() {
+  return {
+    phase: "waiting",
+    countdownStartedAt: null,
+    recordingStartedAt: null,
+    flapAtMs: null,
+    holdUntil: null,
+    completedAt: null,
+  };
+}
+
+function resetGuidedCapture({ clearRecording = true } = {}) {
+  guidedCapture = createGuidedCaptureState();
+  localGesture.reset();
+  if (clearRecording) {
+    currentRecording = createEmptyTrace();
+    updateTraceSummary(currentRecording);
+  }
+}
+
+function hasTwoHands(sample) {
+  return (
+    sample.handCount >= 2 &&
+    Number.isFinite(sample.leftY) &&
+    Number.isFinite(sample.rightY)
+  );
+}
+
+function updateGuidedCapture(sample) {
+  if (scriptController || !mediaPipeReady) {
+    return false;
+  }
+
+  const now = Date.now();
+  const ready = hasTwoHands(sample);
+
+  if (guidedCapture.phase === "complete") {
+    statusText.textContent = trace?.events?.length
+      ? `Saved 67 clip with ${trace.events.length} events.`
+      : "Saved 67 clip.";
+    return true;
+  }
+
+  if (!ready) {
+    if (guidedCapture.phase === "countdown") {
+      guidedCapture = createGuidedCaptureState();
+      localGesture.reset();
+    }
+    statusText.textContent = "Show both hands.";
+    return true;
+  }
+
+  if (guidedCapture.phase === "waiting") {
+    guidedCapture.phase = "countdown";
+    guidedCapture.countdownStartedAt = now;
+    localGesture.reset();
+  }
+
+  if (guidedCapture.phase === "countdown") {
+    const elapsed = now - guidedCapture.countdownStartedAt;
+    const remaining = Math.max(1, Math.ceil((CAPTURE_COUNTDOWN_MS - elapsed) / 1000));
+    statusText.textContent = elapsed >= CAPTURE_COUNTDOWN_MS
+      ? "Recording 67 gesture."
+      : `Recording starts in ${remaining}.`;
+
+    if (elapsed >= CAPTURE_COUNTDOWN_MS) {
+      startGuidedRecording();
+    }
+    return true;
+  }
+
+  if (guidedCapture.phase === "recording" && guidedCapture.flapAtMs === null) {
+    statusText.textContent = "Recording 67 gesture.";
+    return true;
+  }
+
+  if (guidedCapture.phase === "holding") {
+    const remaining = Math.max(0, guidedCapture.holdUntil - now);
+    statusText.textContent = `Hold steady ${(remaining / 1000).toFixed(1)}s.`;
+    if (remaining <= 0) {
+      finalizeGuidedCapture();
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function startGuidedRecording() {
+  guidedCapture.phase = "recording";
+  guidedCapture.recordingStartedAt = Date.now();
+  currentRecording = createEmptyTrace();
+  currentRecording.startedAt = guidedCapture.recordingStartedAt;
+  currentRecording.result = "capturing";
+  currentRecording.score = 0;
+  localGesture.reset();
+  updateTraceSummary(currentRecording);
+}
+
+function handleGestureFlap() {
+  applyLocalFlap();
+  if (guidedCapture.phase !== "recording" || guidedCapture.flapAtMs !== null) {
+    return;
+  }
+
+  guidedCapture.flapAtMs = recordingTraceAtMs() ?? 0;
+  guidedCapture.holdUntil = Date.now() + CAPTURE_HOLD_MS;
+  guidedCapture.phase = "holding";
+  recordTraceEvent(flapMessage("gesture"), { force: true });
+}
+
+function finalizeGuidedCapture() {
+  if (!currentRecording.events.length || guidedCapture.flapAtMs === null) {
+    guidedCapture = createGuidedCaptureState();
+    return;
+  }
+
+  currentRecording.completedAt = new Date().toISOString();
+  currentRecording.result = "gesture-loop";
+  currentRecording.score = 0;
+  trace = snapshotRecording(currentRecording, "gesture-loop");
+  saveTrace(trace);
+  currentRecording = createEmptyTrace();
+  guidedCapture.phase = "complete";
+  guidedCapture.completedAt = Date.now();
+  restoreTraceState();
+  statusText.textContent = `Saved 67 clip with ${trace.events.length} events.`;
 }
 
 function maybeFinalizeRecording() {
@@ -590,8 +685,7 @@ function restartRun({ clearRecording = true } = {}) {
   resetLocalRun();
 
   if (clearRecording && !scriptController) {
-    currentRecording = createEmptyTrace();
-    updateTraceSummary(currentRecording);
+    resetGuidedCapture({ clearRecording: true });
   }
 
   sendTrackedMessage({ type: "restart" }, { record: !scriptController });
@@ -638,9 +732,134 @@ function applyServerState(serverState) {
 }
 
 function advanceLocalSimulation(dt) {
-  if (!state.awaitingStart && !state.gameOver) {
-    stepGameState(state, dt, constants);
+  if (mode === "Replay" && scriptController) {
+    return;
   }
+  if (!state.awaitingStart && !state.gameOver) {
+    stepGameState(state, dt, constants, localSimOptions || undefined);
+  }
+}
+
+function catchUpSimulationTo(targetMs) {
+  const tickSeconds = 1 / 60;
+  const maxCatchUpSteps = 6000;
+  let steps = 0;
+  let simMs = scriptController?.replaySimMs ?? 0;
+
+  while (simMs + tickSeconds * 1000 <= targetMs && !state.gameOver && steps < maxCatchUpSteps) {
+    if (!state.awaitingStart) {
+      stepGameState(state, tickSeconds, constants, localSimOptions || undefined);
+    }
+    simMs += tickSeconds * 1000;
+    steps += 1;
+  }
+
+  if (scriptController) {
+    scriptController.replaySimMs = simMs;
+  }
+}
+
+function maybeScriptAltitudeHold() {
+  const hold = scriptController?.altitudeHold;
+  if (!hold || state.gameOver) {
+    return;
+  }
+
+  const now = performance.now();
+  if (!hold.shouldFlap(state, now)) {
+    return;
+  }
+
+  scriptController.holdFlaps = (scriptController.holdFlaps || 0) + 1;
+  const elapsed = Math.round(now - (scriptController.startedAt || now));
+  applyLocalFlap();
+  sendTrackedMessage(flapMessage("manual"), { record: false, traceAtMs: elapsed });
+  sentFlaps += 1;
+  updateHoldHud(hold);
+}
+
+function updateHoldHud(hold) {
+  const targetY = hold.resolveTargetY(state);
+  const bandHigh = targetY + hold.config.flapBelow;
+  const bandLow = targetY - hold.config.tooHigh;
+  gestureStateText.textContent = `HOLD y=${Math.round(state.birdY)} band ${Math.round(bandLow)}–${Math.round(bandHigh)}`;
+}
+
+function maybeCompleteSuiteHold() {
+  if (!scriptController?.claimScore || finishSubmitted || state.gameOver) {
+    return;
+  }
+  if (state.score < targetWinScore()) {
+    return;
+  }
+
+  const claim = scriptController.claimScore;
+  stopScript();
+  finishSubmitted = true;
+  if (scoreNeedsVerification(claim)) {
+    statusText.textContent = `Score ${state.score}. Verifying with server…`;
+    submitRunForVerification(claim);
+  } else {
+    grantLocalWinIfTrusted(state.score);
+    statusText.textContent = `Hold run finished at score ${state.score}.`;
+  }
+}
+
+function startFrameHoldLive({ name, simOptions, claimScore, godMode = false }) {
+  stopCameraTracking();
+  stopScript();
+  restartRun({ clearRecording: false });
+  localSimOptions = simOptions;
+
+  const altitudeHold = createAltitudeHoldController({
+    respectFrameBounds: !godMode,
+    constants,
+  });
+  altitudeHold.reset();
+  applyLocalFlap();
+  sendTrackedMessage(flapMessage("manual"), { record: false, traceAtMs: 0 });
+
+  const controller = {
+    name,
+    claimScore,
+    altitudeHold,
+    startedAt: performance.now(),
+    holdFlaps: 1,
+    timer: null,
+    stop() {
+      this.stopped = true;
+      if (this.timer) {
+        clearTimeout(this.timer);
+      }
+      localSimOptions = null;
+    },
+  };
+  scriptController = controller;
+  scriptStateText.textContent = name;
+  mode = "Hold";
+  statusText.textContent = godMode
+    ? "God-mode hold: pass pipes + frame."
+    : "Frame hold: pass pipes; floor/ceiling kill.";
+
+  const sampleIntervalMs = 1000 / 60;
+  const tick = () => {
+    if (controller.stopped) {
+      return;
+    }
+    const elapsed = performance.now() - controller.startedAt;
+    const sample = {
+      leftY: 0.45 + 0.02 * Math.sin(elapsed / 280),
+      rightY: 0.55 - 0.02 * Math.sin(elapsed / 280),
+      handCount: 2,
+    };
+    sendHandSample(sample, { record: false, traceAtMs: Math.round(elapsed) });
+    updateHandMeters(sample);
+    drawSampleOverlay(sample);
+    flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps (hold ${controller.holdFlaps})`;
+    controller.timer = window.setTimeout(tick, sampleIntervalMs);
+  };
+  controller.timer = window.setTimeout(tick, 0);
+  updateHoldHud(altitudeHold);
 }
 
 function targetWinScore() {
@@ -655,6 +874,14 @@ function scoreNeedsVerification(score) {
   return config.clientSim !== false && score > verifyScoreThreshold();
 }
 
+/** Show the flag banner only when the win does not require server replay. */
+function grantLocalWinIfTrusted(score) {
+  if (score >= targetWinScore() && !scoreNeedsVerification(score)) {
+    sessionMeta.won = true;
+    updateFlagBanner();
+  }
+}
+
 function checkRunFinished() {
   if (!state.gameOver || finishSubmitted) {
     return;
@@ -663,11 +890,7 @@ function checkRunFinished() {
   finishSubmitted = true;
   sessionMeta.best = Math.max(sessionMeta.best, state.score);
   maybeFinalizeRecording();
-
-  if (state.score >= targetWinScore()) {
-    sessionMeta.won = true;
-    updateFlagBanner();
-  }
+  grantLocalWinIfTrusted(state.score);
 
   if (!scoreNeedsVerification(state.score)) {
     return;
@@ -678,12 +901,16 @@ function checkRunFinished() {
 
 function submitRunForVerification(score) {
   if (!connected || socket.readyState !== WebSocket.OPEN) {
-    statusText.textContent = "Cannot verify run while server is offline.";
+    const offline = "Cannot verify — game socket offline. Connect proxy first.";
+    statusText.textContent = offline;
+    appendSolveSuiteResult(offline);
     return;
   }
 
+  finishSubmitted = true;
   verificationPending = true;
   statusText.textContent = `Verifying run (score ${score})...`;
+  appendSolveSuiteResult(`Submitting finish (claim ${score})…`);
   sendControlMessage({
     type: "finish",
     score,
@@ -691,16 +918,56 @@ function submitRunForVerification(score) {
   });
 }
 
+function appendSolveSuiteResult(text, { replace = false } = {}) {
+  if (!solveSuiteResult) {
+    return;
+  }
+  if (replace) {
+    solveSuiteResult.textContent = text;
+    return;
+  }
+  const previous = solveSuiteResult.textContent.trim();
+  solveSuiteResult.textContent = previous ? `${previous}\n${text}` : text;
+}
+
+function formatVerifiedSummary(message) {
+  const lines = [
+    "--- Verification ---",
+    `valid: ${message.valid}`,
+    `verified: ${message.verified ?? "n/a"}`,
+    `replay score: ${message.score}`,
+    `claimed: ${message.claimedScore ?? "n/a"}`,
+    `won: ${message.won ?? false}`,
+  ];
+  if (message.flag) {
+    lines.push(`flag: ${message.flag}`);
+  }
+  if (message.message) {
+    lines.push(`message: ${message.message}`);
+  }
+  const antiCheat = message.antiCheat;
+  if (antiCheat?.message) {
+    lines.push(`anti-cheat: ${antiCheat.level} — ${antiCheat.message}`);
+  }
+  return lines.join("\n");
+}
+
 function applyVerifiedResult(message) {
   verificationPending = false;
+  appendSolveSuiteResult(formatVerifiedSummary(message));
+
   if (message.valid && message.won) {
     sessionMeta.won = true;
     sessionMeta.flag = message.flag || "";
     statusText.textContent = "Verified win.";
-  } else if (message.blocked || message.antiCheat?.level === "blocked") {
-    statusText.textContent = message.message || "Verification blocked.";
   } else {
-    statusText.textContent = message.message || `Verify failed (score ${message.score}).`;
+    sessionMeta.won = false;
+    sessionMeta.flag = "";
+    if (message.blocked || message.antiCheat?.level === "blocked") {
+      statusText.textContent = message.message || "Verification blocked.";
+    } else {
+      statusText.textContent = message.message || `Verify failed (score ${message.score}).`;
+    }
   }
   updateFlagBanner();
 }
@@ -710,6 +977,8 @@ function draw() {
   const dt = Math.min(MAX_RENDER_DT_SECONDS, Math.max(0, (now - lastDrawAt) / 1000));
   lastDrawAt = now;
   advanceLocalSimulation(dt);
+  maybeScriptAltitudeHold();
+  maybeCompleteSuiteHold();
   checkRunFinished();
 
   ctx.imageSmoothingEnabled = false;
@@ -984,6 +1253,7 @@ async function createHandLandmarker() {
 
 async function startCamera() {
   stopScript();
+  resetGuidedCapture({ clearRecording: true });
   if (!cameraModeEnabled()) {
     statusText.textContent = "Camera input is disabled while backend keyboard mode is on.";
     return;
@@ -1076,15 +1346,17 @@ function trackHands() {
       const result = handLandmarker.detectForVideo(video, performance.now());
       const hands = orderedHands(result);
       const now = performance.now();
-      localGesture.process(hands, now);
       const sample = handSample(hands);
+      const captureStatusHandled = updateGuidedCapture(sample);
+      if (guidedCapture.phase === "recording" || guidedCapture.phase === "holding") {
+        localGesture.process(hands, now);
+      }
       sendHandSample(sample, { record: true });
       updateHandMeters(sample);
       drawHandOverlay(hands);
-      if (hands.length < 2) {
-        statusText.textContent = "Show both hands.";
-      } else {
-        statusText.textContent = "Camera tracking active through proxy.";
+      if (!captureStatusHandled) {
+        statusText.textContent =
+          hands.length < 2 ? "Show both hands." : "Camera tracking active through proxy.";
       }
     }
   }
@@ -1115,15 +1387,7 @@ function handSample(hands) {
 }
 
 function sendHandSample(sample, { record = true, traceAtMs } = {}) {
-  const sent = sendTrackedMessage(
-    {
-      type: "hands",
-      leftY: sample.leftY,
-      rightY: sample.rightY,
-      handCount: sample.handCount,
-    },
-    { record, traceAtMs },
-  );
+  const sent = sendTrackedMessage(handsMessage(sample), { record, traceAtMs });
 
   if (!sent) {
     return;
@@ -1296,166 +1560,190 @@ function landmarkToPreviewPoint(landmark, overlaySize) {
   };
 }
 
-function kickoffLocalRun() {
-  applyLocalFlap();
-  sendTrackedMessage({ type: "flap", source: "manual" }, { record: false });
-}
-
-function startSussyScript() {
+function playTraceEvents(events, { name, claimScore, onDone, simOptions = null } = {}) {
   stopCameraTracking();
   stopScript();
-  restartRun({ clearRecording: false });
-  kickoffLocalRun();
-
-  const controller = {
-    name: "sussy motion",
-    stopped: false,
-    timer: null,
-    stop() {
-      this.stopped = true;
-      if (this.timer) {
-        clearTimeout(this.timer);
-      }
-    },
-  };
-  scriptController = controller;
-  scriptStateText.textContent = controller.name;
-  statusText.textContent =
-    "Sussy motion only (hands) — trips anti-cheat, does not clear pipes. Use Pipe solver to win.";
-  mode = "Script";
-
-  const periodMs = 240;
-  const sampleIntervalMs = 1000 / 60;
-  const startedAt = performance.now();
-
-  const tick = () => {
-    if (controller.stopped) {
-      return;
-    }
-
-    const elapsed = performance.now() - startedAt;
-    const phase = ((elapsed % periodMs) / periodMs) * 2;
-    const triangle = phase < 1 ? phase * 2 - 1 : 3 - phase * 2;
-    const leftHeight = clamp(0.57 + 0.19 * triangle, 0.08, 0.92);
-    const rightHeight = clamp(0.57 - 0.19 * triangle, 0.08, 0.92);
-    const sample = {
-      leftY: 1 - leftHeight,
-      rightY: 1 - rightHeight,
-      handCount: 2,
-    };
-
-    gestureStateText.textContent = triangle >= 0 ? "SUS LEFT_HIGH" : "SUS RIGHT_HIGH";
-    updateHandMeters(sample);
-    drawSampleOverlay(sample);
-    sendHandSample(sample, { record: false });
-    controller.timer = window.setTimeout(tick, sampleIntervalMs);
-  };
-
-  controller.timer = window.setTimeout(tick, 120);
-}
-
-function playTraceEvents(events, { name, claimScore, onDone } = {}) {
-  stopCameraTracking();
-  stopScript();
+  localSimOptions = simOptions;
   restartRun({ clearRecording: false });
 
   const controller = {
     name,
-    stopped: false,
-    timers: [],
+    replaySimMs: 0,
     stop() {
-      this.stopped = true;
-      for (const timer of this.timers) {
-        clearTimeout(timer);
-      }
-      this.timers = [];
+      replayer.stop();
+      localSimOptions = null;
     },
   };
   scriptController = controller;
-  scriptStateText.textContent = controller.name;
+  scriptStateText.textContent = name;
   mode = "Replay";
 
-  for (const event of events) {
-    if (event.message?.type === "restart") {
-      continue;
-    }
-
-    const timer = window.setTimeout(() => {
-      if (controller.stopped) {
-        return;
+  const replayer = createTraceReplayer(events, {
+    onHands: (event) => replayTraceEvent(event),
+    onFlap: (event) => replayTraceEvent(event),
+    onMessage: (event) => replayTraceEvent(event),
+    onComplete: () => {
+      scriptController = null;
+      scriptStateText.textContent = "none";
+      localSimOptions = null;
+      const resolvedClaim = Number(claimScore ?? state.score);
+      appendSolveSuiteResult(
+        `Replay done. Local score ${state.score}. Claim ${resolvedClaim}.`,
+      );
+      if (finishSubmitted) {
+        statusText.textContent = `${name} finished (local score ${state.score}).`;
+      } else if (resolvedClaim > verifyScoreThreshold()) {
+        statusText.textContent = `Replay done. Verifying score ${resolvedClaim}…`;
+        submitRunForVerification(resolvedClaim);
+      } else {
+        statusText.textContent = `${name} finished (local score ${state.score}).`;
+        appendSolveSuiteResult("Skipped verify (claim ≤ threshold).");
       }
-      replayTraceEvent(event);
-    }, event.atMs);
-    controller.timers.push(timer);
-  }
-
-  const lastAtMs = events.at(-1)?.atMs || 0;
-  const finalTimer = window.setTimeout(() => {
-    if (controller.stopped) {
-      return;
-    }
-    stopScript();
-    const resolvedClaim = Number(claimScore ?? state.score);
-    if (resolvedClaim > verifyScoreThreshold()) {
-      statusText.textContent = `Replay done. Verifying score ${resolvedClaim}…`;
-      submitRunForVerification(resolvedClaim);
-    } else {
-      statusText.textContent = `${name} finished (local score ${state.score}).`;
-    }
-    onDone?.({ score: state.score, claimScore: resolvedClaim });
-  }, lastAtMs + 500);
-  controller.timers.push(finalTimer);
+      onDone?.({ score: state.score, claimScore: resolvedClaim });
+    },
+  });
+  controller.stop = () => {
+    replayer.stop();
+    localSimOptions = null;
+    scriptController = null;
+    scriptStateText.textContent = "none";
+  };
 }
 
-function startGoodReplay() {
-  if (!trace || !trace.events.length) {
-    statusText.textContent = "Good replay needs a recorded or imported trace first.";
+function populateSolveSuiteSelect() {
+  if (!solveSuiteSelect) {
     return;
   }
 
-  statusText.textContent = "Replaying recorded trace.";
-  playTraceEvents(trace.events, {
-    name: "good replay",
-    claimScore: trace.claimScore ?? trace.score,
-  });
+  solveSuiteSelect.replaceChildren();
+  for (const group of listSolveModesByTier()) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = `Tier ${group.tier}: ${group.title}`;
+    for (const entry of group.modes) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = entry.label;
+      optgroup.appendChild(option);
+    }
+    solveSuiteSelect.appendChild(optgroup);
+  }
+
+  solveSuiteSelect.value = "recorded-gesture-replay";
+  updateSolveSuiteDescription();
 }
 
-function startPipeSolverScript() {
+function updateSolveSuiteDescription() {
+  if (!solveSuiteSelect || !solveSuiteDescription) {
+    return;
+  }
+
+  const mode = SOLVE_MODES.find((entry) => entry.id === solveSuiteSelect.value);
+  const tier = listSolveModesByTier().find((group) => group.tier === mode?.tier);
+  solveSuiteDescription.textContent = mode
+    ? `${tier?.description || ""} Expected verify: ${mode.verifyExpected}.`
+    : "";
+}
+
+function reportSuiteResult(built, { footer = "" } = {}) {
+  const durationSec = ((built.events?.at(-1)?.atMs ?? built.simMs ?? 0) / 1000).toFixed(1);
+  const lines = [
+    `Mode: ${built.mode.label}`,
+    `Planned: local=${built.score} replay-flaps=${built.replayScore ?? "n/a"} claim=${built.claimScore}`,
+    `Trace: ${built.events?.length ?? 0} events (~${durationSec}s)`,
+    built.note ? `Note: ${built.note}` : "",
+    footer,
+  ].filter(Boolean);
+
+  appendSolveSuiteResult(lines.join("\n"), { replace: true });
+  console.log("Solve suite", built);
+}
+
+async function runSolveSuiteMode(modeId) {
   stopCameraTracking();
   stopScript();
-  restartRun({ clearRecording: false });
-  scriptStateText.textContent = "Computing jumps from deterministic pipe layout…";
-  mode = "Script";
 
-  window.setTimeout(() => {
-    try {
-      const target = targetWinScore();
-      const built = buildSolveTrace({
-        targetScore: target,
-        overshoot: 1,
-        motion: "camouflage",
-      });
-
-      statusText.textContent =
-        `Solver planned ${built.flapSchedule.length} flaps (sim ${built.score}, claim ${built.claimScore}). Replaying…`;
-
-      playTraceEvents(built.events, {
-        name: "pipe solver",
-        claimScore: built.claimScore,
-        onDone: () => {
-          console.log("Flap schedule", built.flapSchedule);
-        },
-      });
-    } catch (error) {
-      statusText.textContent = `Pipe solver failed: ${error.message}`;
-      console.error(error);
+  try {
+    let activeTrace = trace;
+    if (modeId === "recorded-gesture-replay" && !activeTrace?.events?.length) {
+      statusText.textContent = "No trace loaded — fetching solve-pack.json…";
+      activeTrace = await loadSolvePackTrace();
     }
-  }, 0);
+
+    const built = buildSuiteTrace(modeId, {
+      targetScore: targetWinScore(),
+      overshoot: 1,
+      trace: activeTrace,
+    });
+
+    const needsReplay =
+      modeId !== "empty-claim" &&
+      modeId !== "no-collision-pipes" &&
+      modeId !== "no-collision-pipes-frame";
+
+    reportSuiteResult(built, {
+      footer: needsReplay
+        ? "Replaying to server… verification prints below when done."
+        : "",
+    });
+
+    if (modeId === "empty-claim") {
+      restartRun({ clearRecording: false });
+      scriptStateText.textContent = built.mode.label;
+      mode = "Suite";
+      statusText.textContent =
+        "Empty claim: submitting finish 67 with no inputs (expect verify fail).";
+      window.setTimeout(() => {
+        sendTrackedMessage(restartMessage(), { record: false });
+        submitRunForVerification(built.claimScore);
+      }, 400);
+      return;
+    }
+
+    const simOptions = built.stepOptions ?? localSimOptionsForMode(modeId);
+
+    if (modeId === "no-collision-pipes" || modeId === "no-collision-pipes-frame") {
+      startFrameHoldLive({
+        name: built.mode.label,
+        simOptions,
+        claimScore: built.claimScore,
+        godMode: modeId === "no-collision-pipes-frame",
+      });
+      return;
+    }
+
+    const replayName = `${built.mode.label}${built.direction ? ` (${built.direction})` : ""}`;
+    statusText.textContent = `${replayName} — ${built.events.length} events. Replaying…`;
+
+    playTraceEvents(built.events, {
+      name: replayName,
+      claimScore: built.claimScore,
+      simOptions,
+      onDone: () => {
+        if (built.localOnly) {
+          statusText.textContent +=
+            " Local god-mode only — server verify should fail.";
+        }
+      },
+    });
+  } catch (error) {
+    statusText.textContent = error.message;
+    if (solveSuiteResult) {
+      solveSuiteResult.textContent = error.message;
+    }
+  }
+}
+
+function startSolveSuiteScript() {
+  if (!solveSuiteSelect) {
+    return;
+  }
+  void runSolveSuiteMode(solveSuiteSelect.value);
 }
 
 function replayTraceEvent(event) {
   const message = event.message ?? event;
   const traceAtMs = event.atMs;
+  catchUpSimulationTo(traceAtMs);
 
   if (message.type === "hands") {
     const sample = {
@@ -1465,16 +1753,17 @@ function replayTraceEvent(event) {
     };
     updateHandMeters(sample);
     drawSampleOverlay(sample);
+    localGesture.process(mockHandsFromSample(sample), performance.now());
     sendHandSample(sample, { record: false, traceAtMs });
     return;
   }
 
   if (message.type === "flap") {
     applyLocalFlap();
-    sendTrackedMessage(
-      { type: "flap", source: message.source || "manual" },
-      { record: false, traceAtMs },
-    );
+    sendTrackedMessage(flapMessage(message.source || "manual"), {
+      record: false,
+      traceAtMs,
+    });
     sentFlaps += 1;
     flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
     return;
@@ -1496,19 +1785,6 @@ async function loadSolvePackTrace() {
   saveTrace(trace);
   restoreTraceState();
   return trace;
-}
-
-async function startSolvePackReplay() {
-  try {
-    await loadSolvePackTrace();
-    statusText.textContent = "Loaded solve-pack.json.";
-    playTraceEvents(trace.events, {
-      name: "solve pack",
-      claimScore: trace.claimScore ?? trace.score ?? targetWinScore(),
-    });
-  } catch (error) {
-    statusText.textContent = error.message;
-  }
 }
 
 function stopScript() {
@@ -1563,45 +1839,6 @@ async function importTrace(file) {
   trace = parsed;
   saveTrace(trace);
   restoreTraceState();
-}
-
-function pushProxyEvent(event) {
-  proxyEvents.unshift(event);
-  proxyEvents = proxyEvents.slice(0, MAX_LOG_EVENTS);
-  renderProxyEvents();
-}
-
-function renderProxyEvents() {
-  eventLog.innerHTML = "";
-  for (const event of proxyEvents) {
-    const item = document.createElement("li");
-    const meta = document.createElement("span");
-    meta.className = "event-meta";
-    meta.textContent = `${event.timestamp} • ${event.sessionId || "session?"}`;
-    const kind = document.createElement("span");
-    kind.className = "event-kind";
-    kind.textContent = event.type;
-    const body = document.createElement("code");
-    body.textContent = formatProxyEvent(event);
-    item.append(meta, kind, body);
-    eventLog.append(item);
-  }
-}
-
-function formatProxyEvent(event) {
-  if (event.payload) {
-    return JSON.stringify(event.payload);
-  }
-  if (event.messageType) {
-    return event.messageType;
-  }
-  if (event.text) {
-    return event.text;
-  }
-  if (event.closeCode) {
-    return `${event.closeCode} ${event.closeReason || ""}`.trim();
-  }
-  return event.targetUrl || "";
 }
 
 function prepareAtlasTransparency() {
@@ -1681,13 +1918,12 @@ stopScriptButton.addEventListener("click", () => {
   stopScript();
   statusText.textContent = "Script stopped.";
 });
-runSussyButton.addEventListener("click", startSussyScript);
-runGoodButton.addEventListener("click", startGoodReplay);
-if (runPipeSolverButton) {
-  runPipeSolverButton.addEventListener("click", startPipeSolverScript);
+if (runSolveSuiteButton) {
+  runSolveSuiteButton.addEventListener("click", startSolveSuiteScript);
 }
-if (runSolvePackButton) {
-  runSolvePackButton.addEventListener("click", startSolvePackReplay);
+if (solveSuiteSelect) {
+  solveSuiteSelect.addEventListener("change", updateSolveSuiteDescription);
+  populateSolveSuiteSelect();
 }
 exportTraceButton.addEventListener("click", exportTrace);
 importTraceButton.addEventListener("click", () => importTraceInput.click());
@@ -1704,10 +1940,6 @@ importTraceInput.addEventListener("change", async () => {
   } finally {
     importTraceInput.value = "";
   }
-});
-clearLogButton.addEventListener("click", () => {
-  proxyEvents = [];
-  renderProxyEvents();
 });
 
 window.addEventListener("keydown", (event) => {

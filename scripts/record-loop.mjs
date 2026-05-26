@@ -1,28 +1,24 @@
 #!/usr/bin/env node
 /**
- * Record a short seamless hand loop for tiling into solve packs.
+ * Write a stable -> 67 -> stable gesture loop for solve-pack generation.
  *
  * Usage:
- *   node scripts/record-loop.mjs [-o scripts/fixtures/loop.json] [--loop-ms 3200]
+ *   node scripts/record-loop.mjs [-o scripts/fixtures/loop.json]
  */
-import { recordHandLoop } from "./lib/hand-samples.mjs";
+import { buildGestureLoopEvents } from "../shared/gesture-loop.js";
 import { buildTraceDocument, parseArgs, summarizeTrace, writeTrace } from "./lib/trace-utils.mjs";
 
 function main() {
   const { flags } = parseArgs(process.argv.slice(2));
   const output = flags.output || "scripts/fixtures/loop.json";
-  const loopMs = flags.loopMs ?? 3200;
-  const events = recordHandLoop(loopMs, {
-    seed: flags.seed ?? 42,
-    periodMs: flags.period ?? 380,
-    amplitude: 0.19,
-  });
+  const events = buildGestureLoopEvents(flags.loopMs);
 
   const trace = buildTraceDocument(events, { result: "loop", score: 0 });
   writeTrace(output, trace);
   const summary = summarizeTrace(trace);
   console.log(
-    `Wrote loop ${output}: ${summary.handEvents} hand samples, ${(summary.durationMs / 1000).toFixed(2)}s`,
+    `Wrote stable -> 67 -> stable loop ${output}: ` +
+      `${summary.handEvents} hand samples, ${(summary.durationMs / 1000).toFixed(2)}s`,
   );
 }
 

@@ -28,23 +28,124 @@ export function upcomingPipe(state, constants = GAME_CONSTANTS, lookaheadX = 240
   );
 }
 
+const FLAP_STRATEGIES = {
+  greedy(state, constants) {
+    const target = upcomingPipe(state, constants);
+    if (!target) {
+      return state.birdY > constants.floorY - 150;
+    }
+
+    const center = gapCenterY(target, constants);
+    if (state.birdY < center - 35) {
+      return false;
+    }
+
+    return state.birdY > center + 25;
+  },
+
+  late(state, constants) {
+    const target = upcomingPipe(state, constants);
+    if (!target) {
+      return state.birdY > constants.floorY - 120;
+    }
+
+    const center = gapCenterY(target, constants);
+    return state.birdY > center + 38;
+  },
+
+  lookahead(state, constants) {
+    if (!FLAP_STRATEGIES.greedy(state, constants)) {
+      return false;
+    }
+
+    const target = upcomingPipe(state, constants);
+    if (!target) {
+      return true;
+    }
+
+    const center = gapCenterY(target, constants);
+    const frames = 6;
+    const dt = TICK_SECONDS;
+
+    const simulate = (withFlap) => {
+      const probe = {
+        birdY: state.birdY,
+        velocity: state.velocity,
+        score: state.score,
+        elapsed: state.elapsed,
+        spawnTimer: state.spawnTimer,
+        gameOver: false,
+        awaitingStart: false,
+        pipes: state.pipes.map((pipe) => ({ ...pipe })),
+        nextPipeId: state.nextPipeId,
+      };
+
+      if (withFlap) {
+        applyFlap(probe, constants);
+      }
+
+      for (let step = 0; step < frames; step += 1) {
+        stepGameState(probe, dt, constants, { skipCollisions: true, skipBounds: true });
+      }
+
+      return probe;
+    };
+
+    const baseline = simulate(false);
+    const withFlap = simulate(true);
+
+    if (withFlap.birdY < state.birdY - 120) {
+      return false;
+    }
+
+    return (
+      Math.abs(withFlap.birdY - center) <=
+      Math.abs(baseline.birdY - center) + 20
+    );
+  },
+};
+
 /** Heuristic flap decision from bird Y, velocity, and next gap. */
-export function shouldFlap(state, constants = GAME_CONSTANTS) {
+export function shouldFlap(state, constants = GAME_CONSTANTS, strategy = "greedy") {
   if (state.awaitingStart || state.gameOver) {
     return false;
   }
 
-  const target = upcomingPipe(state, constants);
-  if (!target) {
-    return state.birdY > constants.floorY - 150;
-  }
+  const decide = FLAP_STRATEGIES[strategy] || FLAP_STRATEGIES.greedy;
+  return decide(state, constants);
+}
 
-  const center = gapCenterY(target, constants);
-  if (state.birdY < center - 35) {
-    return false;
-  }
+export function mechanicalHandMessage(elapsedMs, options = {}) {
+  const periodMs = options.periodMs ?? 300;
+  const amplitude = options.amplitude ?? 0.024;
+  const midY = options.midY ?? 0.46;
+  const phase = (elapsedMs / periodMs) * Math.PI * 2;
+  const wiggle = amplitude * Math.sin(phase);
+  const drift = amplitude * 0.4 * Math.sin(phase * 0.37 + 1.2);
+  return {
+    type: "hands",
+    leftY: clamp(midY + wiggle + drift, 0.12, 0.88),
+    rightY: clamp(midY - wiggle * 0.9, 0.12, 0.88),
+    handCount: 2,
+  };
+}
 
-  return state.birdY > center + 25;
+/** Slow human-like drift without importing script-only helpers. */
+export function humanLikeHandMessage(elapsedMs, seed = 67) {
+  const random = seededRandom(seed);
+  const periodMs = 340 + random() * 120;
+  const amplitude = 0.17 + random() * 0.05;
+  const phase = (elapsedMs / periodMs) * 2;
+  const triangle = phase % 2 < 1 ? (phase % 1) * 2 - 1 : 3 - (phase % 1) * 2;
+  const center = 0.56;
+  const leftHeight = clamp(center + amplitude * triangle, 0.1, 0.9);
+  const rightHeight = clamp(center - amplitude * triangle * 0.85, 0.1, 0.9);
+  return {
+    type: "hands",
+    leftY: 1 - leftHeight,
+    rightY: 1 - rightHeight,
+    handCount: 2,
+  };
 }
 
 export function camouflageHandMessage(elapsedMs, options = {}) {
@@ -60,26 +161,105 @@ export function camouflageHandMessage(elapsedMs, options = {}) {
   };
 }
 
-export function sussyHandMessage(elapsedMs, options = {}) {
-  const periodMs = options.periodMs ?? 240;
-  const amplitude = options.amplitude ?? 0.19;
-  const centerHeight = options.centerHeight ?? 0.57;
-  const phase = ((elapsedMs % periodMs) / periodMs) * 2;
-  const triangle = phase < 1 ? phase * 2 - 1 : 3 - phase * 2;
-  const offset = amplitude * triangle;
-  const leftHeight = clamp(centerHeight + offset, 0.08, 0.92);
-  const rightHeight = clamp(centerHeight - offset, 0.08, 0.92);
+export function sussyHandMessage(elapsedMs) {
+  return sussyMechanicalHandMessage(elapsedMs, -Infinity);
+}
+
+export function sussyMechanicalHandMessage(elapsedMs, lastFlapAt = -Infinity) {
+  const stableY = 0.48;
+  const elapsedSinceFlap = elapsedMs - lastFlapAt;
+  const pulseMs = 360;
+  const pulse =
+    elapsedSinceFlap >= 0 && elapsedSinceFlap <= pulseMs
+      ? Math.sin((elapsedSinceFlap / pulseMs) * Math.PI)
+      : 0;
+  const stroke = -0.16 * pulse;
   return {
     type: "hands",
-    leftY: 1 - leftHeight,
-    rightY: 1 - rightHeight,
+    leftY: clamp(stableY + stroke, 0.12, 0.88),
+    rightY: clamp(stableY + stroke + 0.01, 0.12, 0.88),
     handCount: 2,
   };
 }
 
-function handMessageAt(elapsedMs, motion, loopDurationMs) {
+export function straightJitterHandMessage(elapsedMs, lastFlapAt = -Infinity) {
+  const stableY = 0.48;
+  const elapsedSinceFlap = elapsedMs - lastFlapAt;
+  const pulseMs = 420;
+  const pulse =
+    elapsedSinceFlap >= 0 && elapsedSinceFlap <= pulseMs
+      ? Math.sin((elapsedSinceFlap / pulseMs) * Math.PI)
+      : 0;
+  const jitter = 0.012 * Math.sin(elapsedMs / 34) + 0.007 * Math.sin(elapsedMs / 17);
+  const stroke = -0.13 * pulse + jitter;
+  return {
+    type: "hands",
+    leftY: clamp(stableY + stroke, 0.12, 0.88),
+    rightY: clamp(stableY + stroke, 0.12, 0.88),
+    handCount: 2,
+  };
+}
+
+export function exact67HandMessage(relativeMs) {
+  const stable = { leftY: 0.47, rightY: 0.48 };
+  const leftHigh = { leftY: 0.34, rightY: 0.6 };
+  const rightHigh = { leftY: 0.6, rightY: 0.34 };
+  const frames = [
+    { atMs: -330, ...stable },
+    { atMs: -280, ...leftHigh },
+    { atMs: -220, ...leftHigh },
+    { atMs: -170, ...stable },
+    { atMs: -120, ...rightHigh },
+    { atMs: -60, ...rightHigh },
+    { atMs: -20, ...stable },
+    { atMs: 0, ...stable },
+  ];
+
+  if (relativeMs <= frames[0].atMs) {
+    return { type: "hands", ...stable, handCount: 2 };
+  }
+
+  for (let index = 0; index < frames.length - 1; index += 1) {
+    const left = frames[index];
+    const right = frames[index + 1];
+    if (relativeMs >= left.atMs && relativeMs <= right.atMs) {
+      const span = right.atMs - left.atMs || 1;
+      const t = (relativeMs - left.atMs) / span;
+      return {
+        type: "hands",
+        leftY: lerp(left.leftY, right.leftY, t),
+        rightY: lerp(left.rightY, right.rightY, t),
+        handCount: 2,
+      };
+    }
+  }
+
+  return { type: "hands", ...stable, handCount: 2 };
+}
+
+export function exact67JitterHandMessage(index) {
+  const leftHigh = { leftY: 0.34, rightY: 0.6 };
+  const rightHigh = { leftY: 0.6, rightY: 0.34 };
+  const frame = index % 2 === 0 ? leftHigh : rightHigh;
+  return {
+    type: "hands",
+    ...frame,
+    handCount: 2,
+  };
+}
+
+function handMessageAt(elapsedMs, motion, loopDurationMs, lastFlapAt = -Infinity) {
   if (motion === "sussy") {
-    return sussyHandMessage(elapsedMs);
+    return sussyMechanicalHandMessage(elapsedMs, lastFlapAt);
+  }
+  if (motion === "straight-jitter") {
+    return straightJitterHandMessage(elapsedMs, lastFlapAt);
+  }
+  if (motion === "mechanical") {
+    return mechanicalHandMessage(elapsedMs, { periodMs: loopDurationMs });
+  }
+  if (motion === "human") {
+    return humanLikeHandMessage(elapsedMs);
   }
   return camouflageHandMessage(elapsedMs, { wigglePeriodMs: loopDurationMs / 2 });
 }
@@ -92,6 +272,7 @@ export function simulateWinningRun({
   targetScore = WIN_SCORE,
   maxSimMs = 130000,
   motion = "camouflage",
+  strategy = "greedy",
   loopDurationMs = 240,
   flapJitterMs = 80,
   seed = 67,
@@ -114,11 +295,11 @@ export function simulateWinningRun({
   while (!state.gameOver && state.score < targetScore && simMs < maxSimMs) {
     events.push({
       atMs: simMs,
-      message: handMessageAt(simMs, motion, loopDurationMs),
+      message: handMessageAt(simMs, motion, loopDurationMs, lastFlapAt),
     });
 
     const flapGap = MIN_FLAP_INTERVAL_MS + (random() - 0.5) * flapJitterMs;
-    if (shouldFlap(state, constants) && simMs - lastFlapAt >= flapGap) {
+    if (shouldFlap(state, constants, strategy) && simMs - lastFlapAt >= flapGap) {
       events.push({
         atMs: simMs,
         message: { type: "flap", source: "manual" },
@@ -201,7 +382,83 @@ export function buildSolveTrace(options = {}) {
     flapSchedule: result.flapSchedule,
     simMs: result.simMs,
     won: result.state.score >= targetScore,
+    strategy: options.strategy || "greedy",
+    motion: options.motion || "camouflage",
   };
+}
+
+export function buildExact67GestureTrace(options = {}) {
+  const targetScore = options.targetScore ?? WIN_SCORE;
+  const planned = simulateWinningRun({
+    ...options,
+    targetScore,
+    motion: "camouflage",
+    strategy: "greedy",
+  });
+  const events = [];
+  const samplesPerFlap = 12;
+
+  for (const flap of planned.flapSchedule) {
+    const atMs = Math.round(flap.atMs);
+    for (let index = 0; index < samplesPerFlap; index += 1) {
+      events.push({
+        atMs,
+        message: exact67JitterHandMessage(index),
+      });
+    }
+    events.push({
+      atMs,
+      message: { type: "flap", source: "gesture" },
+    });
+  }
+
+  events.push({
+    atMs: Math.round(planned.simMs + 800),
+    message: exact67HandMessage(-330),
+  });
+
+  const sorted = events.sort((left, right) => left.atMs - right.atMs);
+  const replayScore = replayScoreFromTimedEvents(sorted);
+
+  return {
+    events: sorted,
+    score: replayScore,
+    claimScore: targetScore,
+    replayScore,
+    simMs: planned.simMs,
+    flapSchedule: planned.flapSchedule,
+    won: replayScore >= targetScore,
+    note:
+      "Exact repeated alternating 67-hand bursts with gesture-source flaps; expected to trip anti-cheat jitter checks.",
+  };
+}
+
+export function replayScoreFromTimedEvents(events, constants = GAME_CONSTANTS) {
+  const state = createGameState();
+  const tickMs = TICK_SECONDS * 1000;
+  let simMs = 0;
+
+  for (const event of events) {
+    const atMs = event.atMs;
+    while (simMs + tickMs <= atMs && !state.gameOver) {
+      if (!state.awaitingStart) {
+        stepGameState(state, TICK_SECONDS, constants);
+      }
+      simMs += tickMs;
+    }
+
+    const remainingMs = atMs - simMs;
+    if (remainingMs > 0.5 && !state.gameOver && !state.awaitingStart) {
+      stepGameState(state, remainingMs / 1000, constants);
+      simMs = atMs;
+    }
+
+    if (event.message?.type === "flap") {
+      applyFlap(state, constants);
+    }
+  }
+
+  return state.score;
 }
 
 function seededRandom(seed) {
@@ -214,4 +471,8 @@ function seededRandom(seed) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function lerp(left, right, t) {
+  return left + (right - left) * t;
 }

@@ -50,10 +50,6 @@
               <strong id="socketState">offline</strong>
             </div>
             <div>
-              <span class="mini-label">Debug socket</span>
-              <strong id="debugSocketState">offline</strong>
-            </div>
-            <div>
               <span class="mini-label">Last script</span>
               <strong id="scriptState">none</strong>
             </div>
@@ -91,47 +87,23 @@
         </section>
 
         <section class="panel">
-          <div class="panel-title">Solve scripts</div>
-          <div class="script-list">
-            <article class="script-card">
-              <h3>Sussy motion</h3>
-              <p>
-                Periodic hand oscillation for anti-cheat testing. Starts the local run but
-                does not solve pipes — no verify path.
-              </p>
-              <button id="runSussyButton" type="button">Run sussy</button>
-            </article>
-            <article class="script-card">
-              <h3>Pipe solver</h3>
-              <p>
-                Simulates the deterministic pipe RNG from <code>game-core</code>, plans manual
-                flaps at gap centers, and replays hands + jumps to verify 67.
-              </p>
-              <button id="runPipeSolverButton" type="button">Run pipe solver</button>
-            </article>
-            <article class="script-card">
-              <h3>Good solve replay</h3>
-              <p>
-                Replays a recorded human trace. Capture a clean run first or import one below.
-              </p>
-              <button id="runGoodButton" type="button">Run good replay</button>
-            </article>
-            <article class="script-card">
-              <h3>Solve pack</h3>
-              <p>
-                Loads <code>scripts/fixtures/solve-pack.json</code>, replays it, and submits
-                <code>finish</code> for server verify (67).
-              </p>
-              <button id="runSolvePackButton" type="button">Run solve pack</button>
-            </article>
+          <div class="panel-title">Solve suite (tiered)</div>
+          <h3 class="solve-suite-heading">Method</h3>
+          <label class="field solve-suite-field">
+            <select id="solveSuiteSelect" class="field-select"></select>
+          </label>
+          <p id="solveSuiteDescription" class="trace-text"></p>
+          <div class="button-row">
+            <button id="runSolveSuiteButton" type="button">Run selected</button>
           </div>
+          <pre id="solveSuiteResult" class="suite-result">Pick a tier and run.</pre>
         </section>
 
         <section class="panel">
           <div class="panel-title">Trace recorder</div>
           <p class="trace-text">
-            Manual play through this page records outbound `hands` and `flap` traffic for later
-            replay.
+            Two-hand capture records a 3-2-1 leadup, one 67-triggered flap, and a steady tail
+            for replay generation.
           </p>
           <div class="button-row">
             <button id="exportTraceButton" type="button">Export trace</button>
@@ -143,13 +115,6 @@
           </div>
         </section>
 
-        <section class="panel">
-          <div class="panel-title">Proxy log</div>
-          <div class="button-row">
-            <button id="clearLogButton" type="button">Clear log</button>
-          </div>
-          <ol id="eventLog" class="event-log" aria-live="polite"></ol>
-        </section>
       </aside>
     </main>
 

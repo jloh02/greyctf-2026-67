@@ -89,7 +89,7 @@ export function applyFlap(state, constants = GAME_CONSTANTS) {
   return state;
 }
 
-export function stepGameState(state, dt, constants = GAME_CONSTANTS) {
+export function stepGameState(state, dt, constants = GAME_CONSTANTS, options = {}) {
   if (state.gameOver || state.awaitingStart) {
     return state;
   }
@@ -114,22 +114,47 @@ export function stepGameState(state, dt, constants = GAME_CONSTANTS) {
 
   state.pipes = state.pipes.filter((pipe) => pipe.x + constants.pipeWidth > -24);
 
-  if (birdOutOfBounds(state, constants) || collidesWithPipe(state, constants)) {
+  const skipBounds = options.skipBounds === true;
+  const pipeHit = collidesWithPipe(state, constants, options);
+  if ((!skipBounds && birdOutOfBounds(state, constants)) || pipeHit) {
     state.gameOver = true;
   }
 
   return state;
 }
 
-export function collidesWithPipe(state, constants = GAME_CONSTANTS) {
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.skipCollisions] - pass through all pipe solids (god mode)
+ * @param {boolean} [options.passPipeGap] - pass through pipe column only while overlapping gap Y; still hit caps + frame
+ */
+export function collidesWithPipe(state, constants = GAME_CONSTANTS, options = {}) {
+  if (options.skipCollisions === true) {
+    return false;
+  }
+
+  const radius = constants.birdRadius;
+  const birdLeft = constants.birdX - radius;
+  const birdRight = constants.birdX + radius;
+  const birdTop = state.birdY - radius;
+  const birdBottom = state.birdY + radius;
+
   return state.pipes.some((pipe) => {
-    const withinX =
-      constants.birdX + constants.birdRadius > pipe.x &&
-      constants.birdX - constants.birdRadius < pipe.x + constants.pipeWidth;
-    const inGap =
-      state.birdY - constants.birdRadius > pipe.gapY &&
-      state.birdY + constants.birdRadius < pipe.gapY + constants.pipeGap;
-    return withinX && !inGap;
+    const withinX = birdRight > pipe.x && birdLeft < pipe.x + constants.pipeWidth;
+    if (!withinX) {
+      return false;
+    }
+
+    const gapTop = pipe.gapY;
+    const gapBottom = pipe.gapY + constants.pipeGap;
+
+    if (options.passPipeGap === true) {
+      const overlapsGap = birdBottom > gapTop && birdTop < gapBottom;
+      return !overlapsGap;
+    }
+
+    const fullyInGap = birdTop > gapTop && birdBottom < gapBottom;
+    return !fullyInGap;
   });
 }
 

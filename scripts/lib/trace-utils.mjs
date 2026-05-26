@@ -150,6 +150,24 @@ export function parseArgs(argv) {
       flags.handsOnly = true;
       continue;
     }
+    if (token === "--manual") {
+      flags.manual = true;
+      continue;
+    }
+    if (token === "--forward") {
+      flags.forward = true;
+      continue;
+    }
+    if (token === "--motion") {
+      flags.motion = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (token === "--strategy") {
+      flags.strategy = argv[index + 1];
+      index += 1;
+      continue;
+    }
     if (token === "--output" || token === "-o") {
       flags.output = argv[index + 1];
       index += 1;

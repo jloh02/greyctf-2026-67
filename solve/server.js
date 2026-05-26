@@ -27,7 +27,6 @@ const MIME_TYPES = new Map([
   [".ico", "image/x-icon"],
 ]);
 
-const debugClients = new Set();
 const proxySessions = new Set();
 
 const server = createServer(async (request, response) => {
@@ -43,7 +42,6 @@ const server = createServer(async (request, response) => {
       JSON.stringify({
         ok: true,
         proxySessions: proxySessions.size,
-        debugClients: debugClients.size,
         defaultTarget: DEFAULT_TARGET_WS_URL,
       }),
     );
@@ -86,23 +84,6 @@ server.on("upgrade", (request, socket) => {
   }
 
   const url = new URL(request.url, `http://${request.headers.host}`);
-  if (url.pathname === "/debug-ws") {
-    const connection = acceptWebSocket(request, socket);
-    if (!connection) {
-      return;
-    }
-    debugClients.add(connection);
-    connection.sendJson({
-      type: "debug-welcome",
-      defaultTarget: DEFAULT_TARGET_WS_URL,
-      activeSessions: proxySessions.size,
-    });
-    connection.onClose = () => {
-      debugClients.delete(connection);
-    };
-    return;
-  }
-
   if (url.pathname === "/ws") {
     const connection = acceptWebSocket(request, socket);
     if (!connection) {
@@ -142,25 +123,11 @@ class ProxySession {
     this.client.onClose = ({ code, reason }) => this.handleClientClose(code, reason);
 
     this.connectBackend();
-    broadcastDebug({
-      type: "proxy-session-start",
-      sessionId: this.id,
-      targetUrl: this.targetUrl,
-      clientAddress: request.socket.remoteAddress || "",
-    });
   }
 
   connectBackend() {
     this.backend = new WebSocket(this.targetUrl);
     this.backend.binaryType = "arraybuffer";
-
-    this.backend.addEventListener("open", () => {
-      broadcastDebug({
-        type: "backend-open",
-        sessionId: this.id,
-        targetUrl: this.targetUrl,
-      });
-    });
 
     this.backend.addEventListener("message", (event) => {
       const payload = toBuffer(event.data);
@@ -169,32 +136,10 @@ class ProxySession {
       } else {
         this.client.sendBinary(payload);
       }
-
-      broadcastDebug({
-        type: "backend-message",
-        sessionId: this.id,
-        targetUrl: this.targetUrl,
-        ...summarizePayload(payload, typeof event.data === "string" ? 0x1 : 0x2),
-      });
     });
 
     this.backend.addEventListener("close", (event) => {
-      broadcastDebug({
-        type: "backend-close",
-        sessionId: this.id,
-        targetUrl: this.targetUrl,
-        closeCode: event.code,
-        closeReason: event.reason,
-      });
       this.close(safeCloseCode(event.code), event.reason || "backend closed");
-    });
-
-    this.backend.addEventListener("error", () => {
-      broadcastDebug({
-        type: "backend-error",
-        sessionId: this.id,
-        targetUrl: this.targetUrl,
-      });
     });
   }
 
@@ -202,13 +147,6 @@ class ProxySession {
     if (this.closed) {
       return;
     }
-
-    broadcastDebug({
-      type: "client-message",
-      sessionId: this.id,
-      targetUrl: this.targetUrl,
-      ...summarizePayload(payload, opcode),
-    });
 
     if (!this.backend || this.backend.readyState !== WebSocket.OPEN) {
       return;
@@ -223,13 +161,6 @@ class ProxySession {
   }
 
   handleClientClose(code, reason) {
-    broadcastDebug({
-      type: "client-close",
-      sessionId: this.id,
-      targetUrl: this.targetUrl,
-      closeCode: code,
-      closeReason: reason,
-    });
     this.close(safeCloseCode(code), reason || "client closed");
   }
 
@@ -243,23 +174,11 @@ class ProxySession {
     const sendCode = safeCloseCode(code);
     const sendReason = safeCloseReason(reason);
 
-    if (this.backend && this.backend.readyState < WebSocket.CLOSING) {
-      try {
-        this.backend.close(sendCode, sendReason);
-      } catch (error) {
-        console.warn(`[proxy ${this.id}] backend close failed: ${error.message}`);
-        this.backend.terminate();
-      }
+    if (this.backend) {
+      forceCloseWebSocket(this.backend, sendCode, sendReason, this.id);
+      this.backend = null;
     }
     this.client.close(sendCode, sendReason);
-
-    broadcastDebug({
-      type: "proxy-session-end",
-      sessionId: this.id,
-      targetUrl: this.targetUrl,
-      closeCode: sendCode,
-      closeReason: sendReason,
-    });
   }
 }
 
@@ -412,18 +331,6 @@ function acceptWebSocket(request, socket) {
   return new RawWebSocketConnection(socket);
 }
 
-function broadcastDebug(event) {
-  const payload = {
-    timestamp: new Date().toISOString(),
-    id: randomUUID().slice(0, 8),
-    ...event,
-  };
-
-  for (const client of debugClients) {
-    client.sendJson(payload);
-  }
-}
-
 function resolveTargetUrlFromRequest(request) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   return normalizeTargetUrl(url.searchParams.get("target") || DEFAULT_TARGET_WS_URL);
@@ -448,30 +355,6 @@ function normalizeTargetUrl(rawTarget) {
   url.search = "";
   url.hash = "";
   return url.toString();
-}
-
-function summarizePayload(payload, opcode) {
-  if (opcode === 0x2) {
-    return {
-      transport: "binary",
-      byteLength: payload.length,
-    };
-  }
-
-  const text = payload.toString("utf8");
-  const json = safeJsonParse(text);
-  if (json) {
-    return {
-      transport: "json",
-      messageType: typeof json.type === "string" ? json.type : "unknown",
-      payload: json,
-    };
-  }
-
-  return {
-    transport: "text",
-    text: text.slice(0, 300),
-  };
 }
 
 function toBuffer(data) {
@@ -558,11 +441,33 @@ function parseFrame(buffer) {
   };
 }
 
-function safeJsonParse(text) {
+function forceCloseWebSocket(ws, code = 1000, reason = "closed", sessionId = "") {
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    return;
+  }
+
+  if (typeof ws.terminate === "function") {
+    try {
+      ws.terminate();
+    } catch (error) {
+      console.warn(`[proxy ${sessionId}] backend terminate failed: ${error.message}`);
+    }
+    return;
+  }
+
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
   try {
-    return JSON.parse(text);
-  } catch {
-    return null;
+    ws.close(code, reason);
+  } catch (error) {
+    console.warn(`[proxy ${sessionId}] backend close failed: ${error.message}`);
+    try {
+      ws.close();
+    } catch {
+      // ignore — connection may already be gone
+    }
   }
 }
 
