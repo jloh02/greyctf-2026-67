@@ -129,30 +129,22 @@ Set these environment variables before starting:
 ```sh
 export SERVER_NAME=your-domain.example
 export CERTBOT_DOMAIN=$SERVER_NAME
-export HTTPS_PORT=4173
+export APP_PORT=36367
 ```
 
-For the first issuance, start only the backend from the production file:
+The production compose file publishes a single host port: `${APP_PORT:-36367}`
+on the Nginx TLS listener. The backend is only reachable inside the Docker
+network.
 
-```sh
-docker compose up -d backend
-```
-
-Nginx expects host-managed Let's Encrypt files at:
+Nginx expects host-managed TLS files at:
 
 ```sh
 /etc/letsencrypt/live/$CERTBOT_DOMAIN/fullchain.pem
 /etc/letsencrypt/live/$CERTBOT_DOMAIN/privkey.pem
 ```
 
-For HTTP-01 validation with host Certbot, use the shared webroot:
-
-```sh
-sudo certbot certonly --webroot -w "$(pwd)/certbot/www" -d "$CERTBOT_DOMAIN"
-docker compose up -d webserver
-```
-
-After the certificate exists, normal startup is:
+Use DNS-01 or another certificate flow that does not require this compose stack
+to publish port 80. After the certificate exists, normal startup is:
 
 ```sh
 docker compose up -d
