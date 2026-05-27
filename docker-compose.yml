@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
-      HOST: 0.0.0.0
+      HOST: 127.0.0.1
       PORT: 8787
       NODE_ENV: production
       DIAGNOSTIC_PAGE: "${DIAGNOSTIC_PAGE:-false}"
