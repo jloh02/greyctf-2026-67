@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Build a legacy gesture trace used by the solve lab/regression harness.
+ * Build a legacy gesture trace for local regression only.
  *
- * The mechanical planner chooses pipe-safe flap times, but production verification
- * now derives flaps from continuous hand samples and rejects explicit gesture flaps.
+ * Do not commit or serve the output in production. Production verification derives
+ * flaps from continuous hand samples and rejects explicit gesture flaps.
  */
 import { WIN_SCORE } from "../shared/game-core.js";
 import { buildSolveTrace } from "../shared/flap-solver.js";

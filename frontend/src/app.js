@@ -1260,7 +1260,7 @@ function populateSolveSuiteSelect() {
     }
     solveSuiteSelect.appendChild(optgroup);
   }
-  solveSuiteSelect.value = "recorded-gesture-replay";
+  solveSuiteSelect.value = listSolveModesByTier()[0]?.modes[0]?.id || "";
   updateSolveSuiteDescription();
 }
 
@@ -1327,14 +1327,6 @@ function playTraceOnFrontend(events, { name, claimScore, simOptions = null, onDo
   mode = "Solve";
 }
 
-async function loadDefaultSolvePack() {
-  const response = await fetch("/fixtures/solve-pack.json", { cache: "no-store" });
-  if (!response.ok) {
-    return null;
-  }
-  return response.json();
-}
-
 async function runFrontendSolveMode(modeId) {
   if (!connected) {
     statusText.textContent = "Connect to the game server first.";
@@ -1342,11 +1334,7 @@ async function runFrontendSolveMode(modeId) {
   }
 
   try {
-    let trace = importedTrace;
-    if (modeId === "recorded-gesture-replay" && !trace) {
-      trace = await loadDefaultSolvePack();
-    }
-
+    const trace = importedTrace;
     const built = buildSuiteTrace(modeId, {
       targetScore: targetWinScore(),
       overshoot: 1,

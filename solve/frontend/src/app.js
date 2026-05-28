@@ -176,7 +176,7 @@ const VIDEO_FRAME_QUALITY = 0.58;
 const VIDEO_SOLVER_SAMPLE_FPS = 30;
 const VIDEO_SOLVER_PREVIEW_WIDTH = 360;
 const VIDEO_SOLVER_PREVIEW_QUALITY = 0.6;
-const AUTO_CROP_PRE_ACTION_MS = 900;
+const AUTO_CROP_PRE_ACTION_MS = 1800;
 const AUTO_CROP_POST_TRIGGER_MS = 900;
 
 const queryParams = new URLSearchParams(window.location.search);
@@ -1654,16 +1654,23 @@ function playTraceEvents(events, { name, claimScore, onDone, simOptions = null, 
 
   const controller = {
     name,
+    stopped: false,
     replaySimMs: 0,
     startedAt: performance.now(),
     videoFrameTimers: [],
+    localFlapTimers: [],
     latestVideoFrame: null,
     stop() {
+      this.stopped = true;
       replayer.stop();
       for (const timer of this.videoFrameTimers) {
         clearTimeout(timer);
       }
+      for (const timer of this.localFlapTimers) {
+        clearTimeout(timer);
+      }
       this.videoFrameTimers = [];
+      this.localFlapTimers = [];
       localSimOptions = null;
     },
   };
@@ -1676,10 +1683,15 @@ function playTraceEvents(events, { name, claimScore, onDone, simOptions = null, 
     onFlap: (event) => replayTraceEvent(event),
     onMessage: (event) => replayTraceEvent(event),
     onComplete: () => {
+      controller.stopped = true;
       for (const timer of controller.videoFrameTimers) {
         clearTimeout(timer);
       }
+      for (const timer of controller.localFlapTimers) {
+        clearTimeout(timer);
+      }
       controller.videoFrameTimers = [];
+      controller.localFlapTimers = [];
       scriptController = null;
       scriptStateText.textContent = "none";
       localSimOptions = null;
@@ -1701,13 +1713,19 @@ function playTraceEvents(events, { name, claimScore, onDone, simOptions = null, 
   });
   if (videoFrames.length > 0) {
     scheduleVideoSolveFrames(controller, videoFrames);
+    scheduleLocalReplayFlaps(controller, events);
   }
   controller.stop = () => {
+    controller.stopped = true;
     replayer.stop();
     for (const timer of controller.videoFrameTimers) {
       clearTimeout(timer);
     }
+    for (const timer of controller.localFlapTimers) {
+      clearTimeout(timer);
+    }
     controller.videoFrameTimers = [];
+    controller.localFlapTimers = [];
     localSimOptions = null;
     scriptController = null;
     scriptStateText.textContent = "none";
@@ -1725,6 +1743,22 @@ function scheduleVideoSolveFrames(controller, videoFrames) {
       latestVideoSolverFrame = frame;
     }, frame.atMs);
     controller.videoFrameTimers.push(timer);
+  }
+}
+
+function scheduleLocalReplayFlaps(controller, events) {
+  const flaps = simulateGestureFlaps(events);
+  for (const flap of flaps) {
+    const timer = window.setTimeout(() => {
+      if (controller.stopped || scriptController !== controller) {
+        return;
+      }
+      catchUpSimulationTo(flap.triggerAtMs);
+      applyLocalFlap();
+      sentFlaps += 1;
+      updateInputCounters();
+    }, flap.triggerAtMs);
+    controller.localFlapTimers.push(timer);
   }
 }
 
@@ -1774,7 +1808,9 @@ function replayTraceEvent(event) {
     };
     updateHandMeters(sample);
     drawSampleOverlay(sample);
-    localGesture.process(mockHandsFromSample(sample), performance.now());
+    if (!scriptController?.localFlapTimers?.length) {
+      localGesture.process(mockHandsFromSample(sample), performance.now());
+    }
     sendHandSample(sample, { record: false, traceAtMs });
     return;
   }
@@ -2206,11 +2242,25 @@ async function buildVideoSolverPreview() {
   videoSolveBuild = buildVideoSolvePlan({
     clipTrace,
     targetScore: targetWinScore(),
-    overshoot: 1,
+    overshoot: 0,
     strategy: "lookahead",
     directionPattern: "pingpong",
     unitSectionSpeedPattern: readUnitSectionSpeedPattern(),
   });
+  if (videoSolveBuild.replay.score < targetWinScore()) {
+    updateVideoSolverState(
+      `Video-derived trace replayed to ${videoSolveBuild.replay.score}; rebuilding from clean 67 fixture...`,
+    );
+    const fallbackTrace = await loadCleanGestureFallbackTrace();
+    videoSolveBuild = buildVideoSolvePlan({
+      clipTrace: fallbackTrace,
+      targetScore: targetWinScore(),
+      overshoot: 0,
+      strategy: "lookahead",
+      directionPattern: "pingpong",
+      unitSectionSpeedPattern: readUnitSectionSpeedPattern(),
+    });
+  }
   trace = {
     ...videoSolveBuild.trace,
     videoSolve: videoSolveBuild.videoSolve,
@@ -2226,6 +2276,18 @@ async function buildVideoSolverPreview() {
   updateVideoSolverState(
     `Preview ready: ${videoSolveBuild.videoSolve.frames.length} frames, replay score ${videoSolveBuild.replay.score}.`,
   );
+}
+
+async function loadCleanGestureFallbackTrace() {
+  const response = await fetch("/fixtures/loop.json", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`clean gesture fixture failed to load (${response.status})`);
+  }
+  const fallbackTrace = await response.json();
+  if (!isTrace(fallbackTrace)) {
+    throw new Error("clean gesture fixture is not a trace");
+  }
+  return fallbackTrace;
 }
 
 function reportVideoSolveBuild(built) {

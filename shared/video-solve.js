@@ -59,29 +59,39 @@ export function buildVideoSolvePlan({
     );
   }
 
-  const desiredFlaps = planned.flapSchedule.map((entry) => entry.atMs + startDelayMs);
+  const plannedFlaps = planned.flapSchedule.map((entry) => entry.atMs + startDelayMs);
+  let desiredFlaps = plannedFlaps;
   const totalDurationMs = planned.simMs + startDelayMs + finalTailMs;
-  const windows = buildGestureWindows({
-    source,
-    desiredFlaps,
-    directionPattern,
-    speedPattern,
-    unitSectionSpeedPattern,
-    totalDurationMs,
-  });
-  const events = buildTimelineEvents({
-    source,
-    windows,
-    totalDurationMs,
-    intervalMs: sampleIntervalMs,
-  });
+  let windows = [];
+  let events = [];
+  let fullReplay = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    windows = buildGestureWindows({
+      source,
+      desiredFlaps,
+      directionPattern,
+      speedPattern,
+      unitSectionSpeedPattern,
+      totalDurationMs,
+    });
+    events = buildTimelineEvents({
+      source,
+      windows,
+      totalDurationMs,
+      intervalMs: sampleIntervalMs,
+    });
+    fullReplay = replayScoreFromGestureEvents(events);
+    if (fullReplay.score >= targetScore || fullReplay.flaps.length === 0) {
+      break;
+    }
+    desiredFlaps = calibrateDesiredFlaps(plannedFlaps, fullReplay.flaps);
+  }
   const frames = buildTimelineFrames({
     source,
     windows,
     totalDurationMs,
     intervalMs: videoFrameIntervalMs,
   });
-  const fullReplay = replayScoreFromGestureEvents(events);
   const derivedFlaps = fullReplay.flaps;
   const replayScore = fullReplay.score;
   const replay = {
@@ -303,6 +313,17 @@ function buildGestureWindows({
       clipDurationMs: clip.durationMs,
       unit,
     };
+  });
+}
+
+function calibrateDesiredFlaps(plannedFlaps, observedFlaps) {
+  return plannedFlaps.map((plannedAtMs, index) => {
+    const observedAtMs = observedFlaps[index]?.triggerAtMs;
+    if (!Number.isFinite(observedAtMs)) {
+      return plannedAtMs;
+    }
+    const correctionMs = clamp(plannedAtMs - observedAtMs, -220, 220);
+    return plannedAtMs + correctionMs;
   });
 }
 
