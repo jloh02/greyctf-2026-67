@@ -5,3 +5,4 @@ pnpm-debug.log
 Dockerfile
 docker-compose.yml
 .DS_Store
+solve/
