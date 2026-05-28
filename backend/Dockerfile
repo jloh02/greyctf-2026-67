@@ -6,9 +6,11 @@ ENV HOST=0.0.0.0
 ENV PORT=8787
 ENV NODE_ENV=production
 
-COPY backend ./backend
-COPY frontend ./frontend
-COPY shared ./shared
+COPY --chown=node:node backend ./backend
+COPY --chown=node:node frontend ./frontend
+COPY --chown=node:node shared ./shared
+
+USER node
 
 EXPOSE 8787
 

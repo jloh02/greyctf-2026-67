@@ -22,5 +22,12 @@ RUN mkdir -p /models \
 
 COPY hand-landmarks/server.py /app/server.py
 
+RUN groupadd --gid 1000 app \
+  && useradd --uid 1000 --gid 1000 --home-dir /app --shell /usr/sbin/nologin app \
+  && chown -R app:app /app /models
+
+USER app
+
 EXPOSE 8790
+
 CMD ["python", "/app/server.py"]

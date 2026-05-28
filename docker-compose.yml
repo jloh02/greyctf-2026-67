@@ -48,7 +48,9 @@ services:
     restart: unless-stopped
 
   webserver:
-    image: nginx:latest
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
     container_name: nginx_web
     depends_on:
       - backend
@@ -57,7 +59,7 @@ services:
       CERTBOT_DOMAIN: "${CERTBOT_DOMAIN:-${SERVER_NAME:-localhost}}"
       DOLLAR: "$"
     ports:
-      - "${APP_PORT:-36767}:443"
+      - "${APP_PORT:-36767}:8080"
     volumes:
       - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro

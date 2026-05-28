@@ -5,7 +5,9 @@ WORKDIR /app
 ENV HOST=0.0.0.0
 ENV PORT=4173
 
-COPY frontend ./frontend
+COPY --chown=node:node frontend ./frontend
+
+USER node
 
 EXPOSE 4173
 
