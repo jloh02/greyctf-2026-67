@@ -25,44 +25,107 @@ Play flappy bird with 67 hand gestures. Reach a pipe score of **67** on a verifi
 
 # Game architecture
 
-The browser runs the game simulation locally (`shared/game-core.js`) for responsive play. Raw webcam video never leaves the client; only hand samples and control messages go to the server over WebSocket.
+The browser runs the game simulation locally (`shared/game-core.js`) for responsive play. During verified camera runs, the client streams compressed camera frames to the backend over the game WebSocket. The backend sends those frames to the bundled MediaPipe sidecar, derives the authoritative hand trace from server-extracted landmarks, and replays physics from that server trace.
 
-| Phase | Client | Server |
-|-------|--------|--------|
-| Play | Local physics + rendering | Records `restart`, `hands`, and `flap` events with timestamps |
-| End (score ≤ 50) | Shows final score | No replay; lightweight ack |
-| End (score > 50) | Sends `{ type: "finish", score }` | Replays the input log, runs anti-cheat, returns `{ type: "verified" }` |
+| Phase            | Client                            | Server                                                                                                                                                |
+| ---------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Play             | Local physics + rendering         | Records `restart`, dev telemetry, live video frames, and dev/keyboard `flap` events with timestamps                                                   |
+| End (score ≤ 50) | Shows final score                 | No replay; lightweight ack                                                                                                                            |
+| End (score > 50) | Sends `{ type: "finish", score }` | Waits for frame landmark extraction, verifies continuous video/snapshot evidence, replays server-derived hand samples, returns `{ type: "verified" }` |
 
 **Scoring**
 
 - Pipe score is shown live on the client.
 - **Flag threshold:** `WIN_SCORE` (67) from `shared/game-core.js` — also sent as `constants.winScore` / `config.winScore` in `welcome`.
-- **Verification threshold:** scores strictly above `VERIFY_SCORE_THRESHOLD` (default 50). Anti-cheat heuristics apply only above that threshold during replay/live play (cadence, gesture leadup, frozen dual-hand streams, repeated amplitude, constant velocity).
+- **Verification threshold:** scores strictly above `VERIFY_SCORE_THRESHOLD` (default 50). Anti-cheat heuristics apply only above that threshold during replay/live play (live camera snapshot challenges, camera trace liveness, cadence, gesture leadup, frozen dual-hand streams, repeated amplitude, constant velocity).
+- **Continuous video verification:** during camera play, the browser streams `video_frame` messages. High-score replay uses server-extracted video landmarks as the authoritative hand trace, not client-submitted hand coordinates.
+- **Snapshot challenges:** during camera play, the backend sends randomized `snapshot_challenge` messages over the game WebSocket. The browser must immediately return a camera frame plus current raw hand sample. Verified runs require enough valid, deadline-bound, non-reused frames.
+- **Landmark matching:** enabled by default. The backend sends each accepted snapshot image to `HAND_LANDMARK_SERVICE_URL` and compares the server-extracted raw hand anchors to the submitted raw anchors. This is tolerance-based, not exact, because browser smoothing, JPEG compression, and independent model runs can shift coordinates slightly. Smoothing is used only for gameplay gesture interpretation.
+- **Continuity checks:** server-side video landmarks must have enough frame cadence, enough two-hand detections, unique frame hashes, meaningful motion range, moving-frame ratio, no short-gap landmark jumps, and reasonable agreement with the client telemetry. Static hand photos, repeated images, sparse streams, cut-frame jumps, and client/video trace mismatches fail closed.
 
 **WebSocket messages (client → server)**
 
 - `restart` — start a new run (clears server input log).
-- `hands` — `{ leftY, rightY, handCount, clientTime }` hand-height samples (~60 Hz in camera mode).
-- `flap` — keyboard/dev mode explicit flap (`source: "gesture" | "manual"`).
+- `hands` — `{ leftY, rightY, handCount, clientTime }` hand-height telemetry (~60 Hz in camera mode). Verified high-score camera runs use this only as corroborating telemetry; replay uses server-extracted video landmarks.
+- `flap` — keyboard/dev mode explicit flap (`source: "gesture" | "manual"`). Explicit flap packets are not trusted for high-score camera verification.
+- `video_frame` — continuous compressed camera frame plus current raw hand sample. Verified high-score replay derives canonical hand samples from server-side landmarks extracted from these frames.
+- `snapshot` — response to a backend snapshot challenge, including a compressed camera frame and current raw hand sample.
 - `finish` — `{ score, clientTime }` after game over when verification is required.
 
 **WebSocket messages (server → client)**
 
 - `welcome` — `constants` (includes `winScore`), `config.winScore`, `config.verifyScoreThreshold`, session best score.
-- `verified` — replay outcome, flag (if won), anti-cheat summary.
+- `snapshot_challenge` — randomized request for an immediate camera frame during a live run.
+- `snapshot_result` — accepts/rejects the submitted challenge image. Rejection text is generic; detailed reasons stay server-side.
+- `verified` — replay outcome, flag (if won), and a public verification summary. Blocked anti-cheat failures intentionally use a generic client-visible message.
 
 Set `CLIENT_SIM=false` on the backend to restore the older server-authoritative mode (live 60 TPS sim + 30 FPS state snapshots) for debugging.
 
 # Environment variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLIENT_SIM` | `true` | Log inputs during play; verify on `finish` instead of live authority |
-| `VERIFY_SCORE_THRESHOLD` | `50` | Minimum claimed score before server replay |
-| `FLAG` / `FINAL_FLAG` | — | Flag string returned when verified score ≥ 67 |
-| `DISABLE_ANTI_CHEAT` | `false` | Skip heuristics (dev only) |
-| `SPACE_67_KEYBOARD` | `false` | Space bar emits synthetic gesture flaps |
-| `DIAGNOSTIC_PAGE` | `false` | Serve `/diagnostics` from the backend |
+| Variable                         | Default                                           | Description                                                                            |
+| -------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `CLIENT_SIM`                     | `true`                                            | Log inputs during play; verify on `finish` instead of live authority                   |
+| `VERIFY_SCORE_THRESHOLD`         | `50`                                              | Minimum claimed score before server replay                                             |
+| `SNAPSHOT_CHALLENGES`            | `true`                                            | Require randomized live camera snapshots for verified runs                             |
+| `SNAPSHOT_MIN_REQUIRED`          | `10`                                              | Minimum completed snapshot challenges for a verified high-score run                    |
+| `SNAPSHOT_DEADLINE_MS`           | `1200`                                            | Response deadline for each live snapshot challenge                                     |
+| `SNAPSHOT_LANDMARK_MODE`         | `required`                                        | `off`, `optional`, or `required` server-side image landmark matching                   |
+| `HAND_LANDMARK_SERVICE_URL`      | `http://hand-landmarks:8790/landmarks` in Compose | HTTP endpoint that extracts hand landmarks from snapshot images                        |
+| `HAND_LANDMARK_MAX_ANCHOR_DELTA` | `0.1`                                             | Max normalized Y difference between server-extracted anchors and submitted raw anchors |
+| `HAND_LANDMARK_TIMEOUT_MS`       | `1200`                                            | Backend timeout for each snapshot landmark extraction request                          |
+| `VIDEO_VERIFY_MODE`              | `required`                                        | `off` or `required` continuous server-side video landmark verification                 |
+| `VIDEO_VERIFY_MIN_FRAMES`        | `80`                                              | Minimum video frames required for a verified high-score run                            |
+| `VIDEO_VERIFY_MIN_VALID_FRAMES`  | `70`                                              | Minimum valid two-hand server landmark frames                                          |
+| `VIDEO_VERIFY_MIN_AVERAGE_FPS`   | `4`                                               | Minimum average accepted frame rate across the run                                     |
+| `FLAG` / `FINAL_FLAG`            | —                                                 | Flag string returned when verified score ≥ 67                                          |
+| `DISABLE_ANTI_CHEAT`             | `false`                                           | Skip heuristics (dev only)                                                             |
+| `SPACE_67_KEYBOARD`              | `false`                                           | Space bar emits synthetic gesture flaps                                                |
+| `DIAGNOSTIC_PAGE`                | `false`                                           | Serve `/diagnostics` from the backend                                                  |
+
+**Hand landmark service contract**
+
+When `SNAPSHOT_LANDMARK_MODE=required`, verified high-score runs fail closed if
+`HAND_LANDMARK_SERVICE_URL` is unset or unavailable. The service must accept
+`POST` JSON:
+
+```json
+{ "challengeId": "...", "image": "data:image/jpeg;base64,...", "width": 480, "height": 270 }
+```
+
+It can return either raw anchors:
+
+```json
+{ "handCount": 2, "leftY": 0.42, "rightY": 0.58 }
+```
+
+or MediaPipe-like landmark arrays:
+
+```json
+{ "hands": [{ "landmarks": [{ "x": 0.7, "y": 0.42 }] }, { "landmarks": [{ "x": 0.3, "y": 0.58 }] }] }
+```
+
+The backend uses raw anchor Y values and compares them with a tolerance
+(`HAND_LANDMARK_MAX_ANCHOR_DELTA`), not exact equality.
+
+The Compose stacks include a bundled MediaPipe sidecar at
+[hand-landmarks/server.py](/Users/jloh02/Documents/Programming/i26-q/hand-landmarks/server.py).
+The backend points to it by default, so `SNAPSHOT_LANDMARK_MODE=required`
+does not need an external service when using Docker. The first image build
+downloads the MediaPipe hand landmarker model into the sidecar image.
+
+**Failure feedback**
+
+High-score anti-cheat failures are intentionally low-detail on the client. The
+public close reason and verification message are:
+
+```text
+Verification failed. Please retry with both hands visible and steady camera framing.
+```
+
+The backend logs the detailed rule internally before closing the socket. This
+keeps player guidance useful without exposing a rule-by-rule tuning oracle to
+bot authors.
 
 # Diagnostics
 
@@ -91,7 +154,7 @@ pnpm start:backend
 
 Open `http://127.0.0.1:8787` (set `DIAGNOSTIC_PAGE=true` in the start script for `/diagnostics`).
 
-For the tiered solve suite on the **production UI**, add `?solve=1` (e.g. `http://127.0.0.1:8787?solve=1`) or use the solve lab at `http://127.0.0.1:4180`. Both use `shared/frontend-client.js` for the same `hands` / `flap` / `finish` wire format. Manual-flap mechanical traces are negative tests; the verify-ready solve pack uses a captured stable -> 67 -> stable gesture leadup and `source: "gesture"` jump events.
+For the tiered solve suite on the **production UI**, add `?solve=1` (e.g. `http://127.0.0.1:8787?solve=1`) or use the solve lab at `http://127.0.0.1:4180`. Both use `shared/frontend-client.js` for the same `hands` / `flap` / `finish` wire format. Manual-flap and legacy explicit-gesture traces are negative tests; high-score verification now requires continuous live-paced camera frames whose server-extracted landmarks can drive replay.
 
 **Split frontend dev server:**
 
@@ -116,13 +179,16 @@ Docker local stack: [docker-compose.local.yml](docker-compose.local.yml)
 docker compose -f docker-compose.local.yml up -d backend
 ```
 
-App: `http://127.0.0.1:8787`
+That starts both `backend` and the `hand-landmarks` dependency. App:
+`http://127.0.0.1:8787`; sidecar health:
+`http://127.0.0.1:8790/healthz`.
 
 # HTTPS Deployment
 
 The default [docker-compose.yml](/Users/jloh02/Documents/Programming/i26-q/docker-compose.yml)
 is the production stack. It adds Nginx in front of the backend for TLS
-termination, so a dedicated server can simply run `docker compose up -d`.
+termination and runs the MediaPipe hand-landmark sidecar on the internal
+Docker network, so a dedicated server can simply run `docker compose up -d`.
 
 Set these environment variables before starting:
 
@@ -150,4 +216,4 @@ to publish port 80. After the certificate exists, normal startup is:
 docker compose up -d
 ```
 
-Nginx terminates TLS and proxies `/`, `/api/`, and `/ws` to the backend. Game traffic uses WebSocket frames (incremental `hands` samples); the `finish` message is small (`score` only). Increasing `client_max_body_size` is only needed if you add HTTP endpoints that accept full trace uploads — see comments in [nginx/default.conf.template](nginx/default.conf.template).
+Nginx terminates TLS and proxies `/`, `/api/`, and `/ws` to the backend. Game traffic uses WebSocket frames, including `hands` telemetry, continuous compressed `video_frame` evidence, randomized `snapshot` responses, and the small `finish` claim. Increasing `client_max_body_size` is only needed if you add HTTP endpoints that accept full trace uploads — see comments in [nginx/default.conf.template](nginx/default.conf.template).

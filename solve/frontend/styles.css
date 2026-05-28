@@ -259,6 +259,34 @@ button:disabled {
     #ddd2b0;
 }
 
+.solver-preview-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #1d2430;
+  border: 1px solid rgba(84, 61, 21, 0.16);
+}
+
+#solverPreview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #1d2430;
+}
+
+.crop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.compact-row button {
+  padding: 8px 12px;
+  font-size: 0.86rem;
+}
+
 #cameraPreview,
 #handOverlay {
   position: absolute;
@@ -340,6 +368,10 @@ meter {
   }
 
   .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .crop-grid {
     grid-template-columns: 1fr;
   }
 }

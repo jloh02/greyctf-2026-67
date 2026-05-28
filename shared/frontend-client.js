@@ -7,6 +7,10 @@ import { WIN_SCORE } from "./game-core.js";
 export const MESSAGE_TYPES = Object.freeze({
   hands: "hands",
   flap: "flap",
+  snapshot: "snapshot",
+  snapshotChallenge: "snapshot_challenge",
+  snapshotResult: "snapshot_result",
+  videoFrame: "video_frame",
   restart: "restart",
   finish: "finish",
   sync: "sync",

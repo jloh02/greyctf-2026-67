@@ -12,10 +12,13 @@ import {
 import {
   buildExact67GestureTrace,
   buildSolveTrace,
-  replayScoreFromTimedEvents,
 } from "./flap-solver.js";
-import { buildGestureSolvePack } from "./gesture-solve.js";
+import {
+  buildGestureSolvePack,
+  replayScoreFromGestureEvents,
+} from "./gesture-solve.js";
 import { normalizeTraceEvents } from "./frontend-client.js";
+import { buildVideoSolvePlan } from "./video-solve.js";
 
 export { localSimOptionsForMode };
 
@@ -40,9 +43,9 @@ export const SOLVE_TIERS = [
   },
   {
     tier: 4,
-    title: "Recorded gesture replay",
+    title: "Recorded gesture/video replay",
     description:
-      "Record one stable -> 67 -> stable clip, then replay it forward at varied speeds for each jump.",
+      "Legacy explicit-flap replay plus an experimental video-backed forward/back solver.",
   },
 ];
 
@@ -116,9 +119,17 @@ export const SOLVE_MODES = [
   {
     id: "recorded-gesture-replay",
     tier: 4,
-    label: "Recorded 67 gesture replay",
-    verifyExpected: "pass",
+    label: "Recorded 67 gesture replay (legacy)",
+    verifyExpected: "fail",
     needsTrace: true,
+  },
+  {
+    id: "recorded-video-pingpong",
+    tier: 4,
+    label: "Recorded video solver — forward/back",
+    verifyExpected: "experimental",
+    needsTrace: true,
+    needsVideo: true,
   },
 ];
 
@@ -181,7 +192,7 @@ export function prepareReplayTrace(trace, direction = "forward") {
     events: prepared,
     score: trace.score ?? 0,
     claimScore: trace.claimScore ?? trace.score ?? WIN_SCORE,
-    replayScore: replayScoreFromTimedEvents(prepared),
+    replayScore: replayScoreFromGestureEvents(prepared).score,
     direction,
     note:
       direction === "reverse"
@@ -189,8 +200,8 @@ export function prepareReplayTrace(trace, direction = "forward") {
         : manualFlaps > 0
           ? "Forward replay contains explicit manual flaps; backend rejects those for camera-gesture verification."
           : flaps > 0
-            ? "Forward replay uses speed-varied hand leadup plus explicit gesture flap events."
-          : "Forward hand-only replay; backend derives flaps from recorded 67 gestures.",
+            ? "Forward replay contains explicit gesture flaps; high-score camera verification now derives flaps from hands only."
+            : "Forward hand-only replay; backend derives flaps from recorded 67 gestures.",
   };
 }
 
@@ -227,7 +238,37 @@ export function buildSuiteTrace(modeId, options = {}) {
       note:
         `Generated from one forward human 67 clip ` +
         `(${built.clip.durationMs.toFixed(0)}ms, trigger ${built.clip.triggerAtMs.toFixed(0)}ms) ` +
-        `and speed-varied per jump.`,
+        `and speed-varied per jump. Legacy explicit flap events are expected to fail server verification.`,
+    };
+  }
+
+  if (mode.id === "recorded-video-pingpong") {
+    if (!options.trace) {
+      throw new Error(`${mode.id} requires a loaded cropped recording trace.`);
+    }
+    const built = buildVideoSolvePlan({
+      clipTrace: options.trace,
+      targetScore: options.targetScore ?? WIN_SCORE,
+      overshoot: options.overshoot ?? 0,
+      strategy: options.strategy || "lookahead",
+      directionPattern: "pingpong",
+    });
+    return {
+      mode,
+      ...built.trace,
+      events: normalizeTraceEvents(built.trace.events || []),
+      replayScore: built.replay.score,
+      source: built.source,
+      videoSolve: built.videoSolve,
+      clip: {
+        triggerAtMs: built.source.triggerAtMs,
+        durationMs: built.source.durationMs,
+        directions: Object.keys(built.source.directions),
+      },
+      note:
+        `Hand-only replay generated from one cropped video trace, alternating forward/backward ` +
+        `(${built.videoSolve.windows.length} gestures, ${built.videoSolve.frames.length} video frames). ` +
+        `The solve UI must have the matching source video loaded to submit video evidence.`,
     };
   }
 

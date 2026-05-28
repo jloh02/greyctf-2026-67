@@ -88,6 +88,17 @@ let config = {
   clientSim: true,
   winScore: WIN_SCORE,
   verifyScoreThreshold: 50,
+  snapshotChallenges: {
+    enabled: true,
+    minRequired: 10,
+    deadlineMs: 1200,
+  },
+  videoVerify: {
+    mode: "required",
+    minFrames: 80,
+    minValidFrames: 70,
+    minAverageFps: 4,
+  },
 };
 
 let gameState = createGameState();
@@ -108,6 +119,8 @@ let handLandmarker = null;
 let lastVideoTime = -1;
 let sentFlaps = 0;
 let sentHandSamples = 0;
+let sentVideoFrames = 0;
+let lastVideoFrameSentAt = -Infinity;
 let mode = "Connecting";
 let synthetic67LeftHigh = false;
 let pingTimer = null;
@@ -115,6 +128,9 @@ let runTraceAtMs = null;
 let scriptController = null;
 let localSimOptions = null;
 let importedTrace = null;
+let latestHandSample = { leftY: null, rightY: null, handCount: 0 };
+let snapshotChallengeCount = 0;
+let snapshotAcceptedCount = 0;
 const solveSuiteEnabled = new URLSearchParams(window.location.search).has("solve");
 let syncState = {
   rttMs: 0,
@@ -122,6 +138,9 @@ let syncState = {
 };
 
 const PING_INTERVAL_MS = 2000;
+const VIDEO_FRAME_INTERVAL_MS = 80;
+const VIDEO_FRAME_WIDTH = 360;
+const VIDEO_FRAME_QUALITY = 0.58;
 const SYNC_SMOOTHING = 0.2;
 const MAX_RENDER_DT_SECONDS = 0.05;
 let lastDrawAt = performance.now();
@@ -176,6 +195,14 @@ function connect() {
     }
     if (message.type === "verified") {
       applyVerifiedResult(message);
+      return;
+    }
+    if (message.type === "snapshot_challenge") {
+      handleSnapshotChallenge(message);
+      return;
+    }
+    if (message.type === "snapshot_result") {
+      handleSnapshotResult(message);
       return;
     }
     if (message.type === "pong") {
@@ -289,7 +316,7 @@ function sendFlap(source, traceAtMs = currentTraceAtMs()) {
   applyLocalFlap();
   socket.send(JSON.stringify(toSocketPayload(flapMessage(source), { traceAtMs })));
   sentFlaps += 1;
-  flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
+  updateInputCounters();
   mode = config.space67Keyboard ? "Keyboard" : mediaPipeReady ? "Tracking" : "Online";
 }
 
@@ -346,7 +373,11 @@ function restartRun() {
   stopSolveScript();
   sentFlaps = 0;
   sentHandSamples = 0;
-  flapPulseText.textContent = "0 samples / 0 flaps";
+  sentVideoFrames = 0;
+  lastVideoFrameSentAt = -Infinity;
+  snapshotChallengeCount = 0;
+  snapshotAcceptedCount = 0;
+  flapPulseText.textContent = "0 samples / 0 frames / 0 flaps";
   sessionMeta.won = false;
   sessionMeta.flag = "";
   resetLocalRun();
@@ -895,6 +926,7 @@ function trackHands() {
       localGesture.process(hands, now);
       const sample = handSample(hands);
       sendHandSample(sample);
+      maybeSendVideoFrame(sample, now);
       updateHandMeters(sample);
       drawHandOverlay(hands);
       if (hands.length < 2) {
@@ -932,13 +964,120 @@ function handSample(hands) {
 }
 
 function sendHandSample(sample, traceAtMs = currentTraceAtMs()) {
+  latestHandSample = {
+    leftY: sample.leftY,
+    rightY: sample.rightY,
+    handCount: sample.handCount,
+  };
+
   if (!connected || socket.readyState !== WebSocket.OPEN) {
     return;
   }
 
   socket.send(JSON.stringify(toSocketPayload(handsMessage(sample), { traceAtMs })));
   sentHandSamples += 1;
-  flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
+  updateInputCounters();
+}
+
+function maybeSendVideoFrame(sample, now = performance.now()) {
+  if (config.videoVerify?.mode === "off") {
+    return;
+  }
+  if (!connected || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  if (now - lastVideoFrameSentAt < VIDEO_FRAME_INTERVAL_MS) {
+    return;
+  }
+  if (!mediaPipeReady || sample.handCount < 2) {
+    return;
+  }
+
+  lastVideoFrameSentAt = now;
+  const traceAtMs = currentTraceAtMs();
+  const payload = {
+    type: "video_frame",
+    sequence: sentVideoFrames + 1,
+    ...sample,
+    clientTime: Date.now(),
+    traceAtMs,
+  };
+
+  try {
+    payload.image = captureCameraSnapshot(VIDEO_FRAME_WIDTH, VIDEO_FRAME_QUALITY);
+  } catch (error) {
+    payload.image = "";
+    payload.error = error.message;
+  }
+
+  socket.send(JSON.stringify(payload));
+  sentVideoFrames += 1;
+  updateInputCounters();
+}
+
+function updateInputCounters() {
+  flapPulseText.textContent = `${sentHandSamples} samples / ${sentVideoFrames} frames / ${sentFlaps} flaps`;
+}
+
+function handleSnapshotChallenge(message) {
+  snapshotChallengeCount += 1;
+  statusText.textContent = `Snapshot challenge ${snapshotChallengeCount}: keep both hands visible.`;
+  sendSnapshotResponse(message);
+}
+
+function handleSnapshotResult(message) {
+  if (message.accepted) {
+    snapshotAcceptedCount += 1;
+    statusText.textContent = `Snapshot accepted (${snapshotAcceptedCount}/${snapshotChallengeCount}).`;
+    return;
+  }
+
+  statusText.textContent = message.message || "Snapshot challenge failed.";
+  showCheatAlert("warning", statusText.textContent);
+}
+
+function sendSnapshotResponse(challenge) {
+  if (!connected || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  const payload = {
+    type: "snapshot",
+    challengeId: challenge.challengeId,
+    ...latestHandSample,
+    clientTime: Date.now(),
+    traceAtMs: currentTraceAtMs(),
+  };
+
+  try {
+    payload.image = captureCameraSnapshot();
+  } catch (error) {
+    payload.image = "";
+    payload.error = error.message;
+  }
+
+  socket.send(JSON.stringify(payload));
+}
+
+function captureCameraSnapshot(targetMaxWidth = 480, quality = 0.68) {
+  if (!mediaPipeReady || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    throw new Error("camera frame unavailable");
+  }
+
+  const sourceWidth = video.videoWidth || 0;
+  const sourceHeight = video.videoHeight || 0;
+  if (sourceWidth < 1 || sourceHeight < 1) {
+    throw new Error("camera frame has no dimensions");
+  }
+
+  const targetWidth = Math.min(targetMaxWidth, sourceWidth);
+  const targetHeight = Math.max(1, Math.round((sourceHeight / sourceWidth) * targetWidth));
+  const snapshotCanvas = document.createElement("canvas");
+  snapshotCanvas.width = targetWidth;
+  snapshotCanvas.height = targetHeight;
+  const snapshotCtx = snapshotCanvas.getContext("2d");
+  snapshotCtx.drawImage(video, 0, 0, targetWidth, targetHeight);
+  return snapshotCanvas.toDataURL("image/jpeg", quality);
 }
 
 function updateHandMeters(sample) {

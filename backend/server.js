@@ -2,9 +2,11 @@
  * 67 Flight backend — WebSocket game service.
  *
  * Default mode (CLIENT_SIM=true): the browser runs physics locally for smooth play.
- * The server only records input events (`restart`, `hands`, `flap`) and does not
- * broadcast live state. When a run ends with score > VERIFY_SCORE_THRESHOLD (50),
- * the client sends `{ type: "finish", score }` and the server replays the log through
+ * The server records `restart`, `hands`, continuous `video_frame` evidence, and
+ * dev/keyboard `flap` events. High-score camera verification derives physics flaps
+ * from server-extracted video landmarks, not trusted client coordinates. When a run
+ * ends with score > VERIFY_SCORE_THRESHOLD (50), the client sends
+ * `{ type: "finish", score }` and the server replays the server-derived trace through
  * shared/game-core.js plus gesture + anti-cheat heuristics. The flag is granted when
  * replay score >= WIN_SCORE and the claim matches.
  *
@@ -13,7 +15,7 @@
  * Set CLIENT_SIM=false to restore the older server-authoritative loop (60 TPS sim,
  * 30 FPS state snapshots) for debugging or tooling.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -64,6 +66,51 @@ const CLIENT_SIM = parseBoolean(process.env.CLIENT_SIM, true);
 // Runs with claimed score above this value are replay-verified on `finish`.
 const VERIFY_SCORE_THRESHOLD = Number(process.env.VERIFY_SCORE_THRESHOLD || "50");
 const FLAG_SCORE_HINT = `psss... hearsay the score you need to hit is ${WIN_SCORE}!`;
+const PUBLIC_ANTI_CHEAT_FAILURE =
+  "Verification failed. Please retry with both hands visible and steady camera framing.";
+const PUBLIC_SNAPSHOT_FAILURE = "Snapshot challenge failed. Keep both hands visible.";
+const SNAPSHOT_CHALLENGES = {
+  enabled: parseBoolean(process.env.SNAPSHOT_CHALLENGES, true),
+  minRequired: Number(process.env.SNAPSHOT_MIN_REQUIRED || "10"),
+  startDelayMs: Number(process.env.SNAPSHOT_START_DELAY_MS || "2500"),
+  minIntervalMs: Number(process.env.SNAPSHOT_MIN_INTERVAL_MS || "4500"),
+  maxIntervalMs: Number(process.env.SNAPSHOT_MAX_INTERVAL_MS || "9000"),
+  deadlineMs: Number(process.env.SNAPSHOT_DEADLINE_MS || "1200"),
+  maxOutstanding: 1,
+  maxHandSampleOffsetMs: 250,
+  maxSnapshotHandDelta: 0.08,
+  minBytes: 8000,
+  maxBytes: 450000,
+  minWidth: 320,
+  minHeight: 180,
+  minEntropy: 4.2,
+  minUniqueBytes: 48,
+};
+const SNAPSHOT_LANDMARKS = {
+  serviceUrl: process.env.HAND_LANDMARK_SERVICE_URL || "",
+  mode: process.env.SNAPSHOT_LANDMARK_MODE || "required",
+  timeoutMs: Number(process.env.HAND_LANDMARK_TIMEOUT_MS || "1200"),
+  maxAnchorDelta: Number(process.env.HAND_LANDMARK_MAX_ANCHOR_DELTA || "0.1"),
+};
+const VIDEO_VERIFY = {
+  mode: process.env.VIDEO_VERIFY_MODE || "required",
+  maxFrameMs: Number(process.env.VIDEO_VERIFY_MAX_FRAME_MS || "600000"),
+  minFrames: Number(process.env.VIDEO_VERIFY_MIN_FRAMES || "80"),
+  minValidFrames: Number(process.env.VIDEO_VERIFY_MIN_VALID_FRAMES || "70"),
+  minAverageFps: Number(process.env.VIDEO_VERIFY_MIN_AVERAGE_FPS || "4"),
+  maxMedianFrameGapMs: Number(process.env.VIDEO_VERIFY_MAX_MEDIAN_GAP_MS || "320"),
+  maxP90FrameGapMs: Number(process.env.VIDEO_VERIFY_MAX_P90_GAP_MS || "900"),
+  maxP99FrameGapMs: Number(process.env.VIDEO_VERIFY_MAX_P99_GAP_MS || "1800"),
+  maxDuplicateHashRatio: Number(process.env.VIDEO_VERIFY_MAX_DUPLICATE_HASH_RATIO || "0.04"),
+  minUniqueHashRatio: Number(process.env.VIDEO_VERIFY_MIN_UNIQUE_HASH_RATIO || "0.72"),
+  minMotionRange: Number(process.env.VIDEO_VERIFY_MIN_MOTION_RANGE || "0.18"),
+  minMovingFrameRatio: Number(process.env.VIDEO_VERIFY_MIN_MOVING_FRAME_RATIO || "0.28"),
+  motionEpsilon: Number(process.env.VIDEO_VERIFY_MOTION_EPSILON || "0.012"),
+  maxShortGapJump: Number(process.env.VIDEO_VERIFY_MAX_SHORT_GAP_JUMP || "0.55"),
+  shortGapJumpMs: Number(process.env.VIDEO_VERIFY_SHORT_GAP_JUMP_MS || "260"),
+  maxClientAnchorDelta: Number(process.env.VIDEO_VERIFY_MAX_CLIENT_ANCHOR_DELTA || "0.14"),
+  maxClientFrameOffsetMs: Number(process.env.VIDEO_VERIFY_MAX_CLIENT_FRAME_OFFSET_MS || "300"),
+};
 const GESTURE_CONFIG = {
   crossThreshold: 0.08,
   minCrossesPerFlap: 2,
@@ -123,6 +170,39 @@ const ANTI_CHEAT = {
     score: 18,
     cooldownMs: 2500,
   },
+  cameraTrace: {
+    minSamples: 120,
+    minAverageSampleHz: 8,
+    maxMedianSampleGapMs: 120,
+    maxP90SampleGapMs: 280,
+    maxP99SampleGapMs: 1200,
+    maxSameTimestampSamples: 6,
+    minWallClockRatio: 0.82,
+    maxWallClockLeadMs: 1800,
+    minWallAuditDurationMs: 8000,
+    minVariabilitySamples: 80,
+    minUniquePairs: 32,
+    minUniquePairRatio: 0.16,
+  },
+  motionTexture: {
+    maxVectorGapMs: 120,
+    minVectorDistance: 0.0015,
+    minActiveVectors: 80,
+    minUniqueVectorRatio: 0.22,
+    maxCollinearStableRatio: 0.86,
+    collinearSine: 0.035,
+    maxSpeedChangeRatio: 0.08,
+  },
+  gestureTemplate: {
+    windowMs: 420,
+    minSamples: 6,
+    bins: 9,
+    maxRmsDistance: 0.014,
+    repeatThreshold: 3,
+    historySize: 24,
+    score: 42,
+    cooldownMs: 2500,
+  },
 };
 
 const sockets = new Set();
@@ -146,6 +226,22 @@ const server = createServer(async (request, response) => {
         clientSim: CLIENT_SIM,
         winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
+        snapshotChallenges: {
+          enabled: SNAPSHOT_CHALLENGES.enabled,
+          minRequired: SNAPSHOT_CHALLENGES.minRequired,
+          deadlineMs: SNAPSHOT_CHALLENGES.deadlineMs,
+        },
+        snapshotLandmarks: {
+          mode: SNAPSHOT_LANDMARKS.mode,
+          configured: Boolean(SNAPSHOT_LANDMARKS.serviceUrl),
+          maxAnchorDelta: SNAPSHOT_LANDMARKS.maxAnchorDelta,
+        },
+        videoVerify: {
+          mode: VIDEO_VERIFY.mode,
+          minFrames: VIDEO_VERIFY.minFrames,
+          minValidFrames: VIDEO_VERIFY.minValidFrames,
+          minAverageFps: VIDEO_VERIFY.minAverageFps,
+        },
       }),
     );
     return;
@@ -291,6 +387,12 @@ class GameSocket {
     this.clientSim = CLIENT_SIM;
     this.runLog = [];
     this.runStartPerf = performance.now();
+    this.snapshotChallengeSeq = 0;
+    this.pendingSnapshotChallenges = new Map();
+    this.nextSnapshotChallengeAt = Infinity;
+    this.runHasHandSamples = false;
+    this.videoFrameSeq = 0;
+    this.pendingVideoFrameTasks = new Set();
 
     socket.on("data", (chunk) => this.receive(chunk));
     socket.on("close", () => this.close());
@@ -309,6 +411,22 @@ class GameSocket {
         winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
         gesture: GESTURE_CONFIG,
+        snapshotChallenges: {
+          enabled: SNAPSHOT_CHALLENGES.enabled,
+          minRequired: SNAPSHOT_CHALLENGES.minRequired,
+          deadlineMs: SNAPSHOT_CHALLENGES.deadlineMs,
+        },
+        snapshotLandmarks: {
+          mode: SNAPSHOT_LANDMARKS.mode,
+          configured: Boolean(SNAPSHOT_LANDMARKS.serviceUrl),
+          maxAnchorDelta: SNAPSHOT_LANDMARKS.maxAnchorDelta,
+        },
+        videoVerify: {
+          mode: VIDEO_VERIFY.mode,
+          minFrames: VIDEO_VERIFY.minFrames,
+          minValidFrames: VIDEO_VERIFY.minValidFrames,
+          minAverageFps: VIDEO_VERIFY.minAverageFps,
+        },
       },
       session: {
         best: this.game.best,
@@ -411,34 +529,232 @@ class GameSocket {
       return;
     }
 
+    if (message.type === "snapshot") {
+      if (this.clientSim) {
+        this.recordSnapshotResponse(message);
+      }
+      return;
+    }
+
+    if (message.type === "video_frame") {
+      if (this.clientSim) {
+        this.recordVideoFrame(message);
+      }
+      return;
+    }
+
     if (message.type === "finish") {
-      this.handleFinish(message);
+      this.handleFinish(message).catch((error) => {
+        this.send({
+          type: "verified",
+          verified: true,
+          valid: false,
+          score: 0,
+          claimedScore: clampInteger(message.score, 0, WIN_SCORE),
+          won: false,
+          flag: "",
+          message: `Verification failed: ${error.message}`,
+          hint: FLAG_SCORE_HINT,
+          antiCheat: GameSession.failedAntiCheatSnapshot({
+            key: "verify-error",
+            message: error.message,
+            blocked: true,
+          }),
+        });
+      });
     }
   }
 
   beginRunLog() {
     this.runStartPerf = performance.now();
-    this.runLog = [{ type: "restart", atMs: 0 }];
+    this.runLog = [{ type: "restart", atMs: 0, receivedAtMs: 0 }];
+    this.snapshotChallengeSeq = 0;
+    this.pendingSnapshotChallenges = new Map();
+    this.nextSnapshotChallengeAt = Infinity;
+    this.runHasHandSamples = false;
+    this.videoFrameSeq = 0;
+    this.pendingVideoFrameTasks = new Set();
   }
 
   /** Append a replayable input event while CLIENT_SIM is active. */
   recordRunEvent(message) {
+    const receivedAtMs = performance.now() - this.runStartPerf;
     const atMs = Number.isFinite(message.traceAtMs)
       ? clamp(message.traceAtMs, 0, 600000)
-      : performance.now() - this.runStartPerf;
-    const entry = { type: message.type, atMs };
+      : receivedAtMs;
+    const entry = { type: message.type, atMs, receivedAtMs };
     if (message.type === "hands") {
       entry.leftY = message.leftY;
       entry.rightY = message.rightY;
       entry.handCount = message.handCount;
+      if (!this.runHasHandSamples) {
+        this.runHasHandSamples = true;
+        this.nextSnapshotChallengeAt =
+          performance.now() + SNAPSHOT_CHALLENGES.startDelayMs;
+      }
     } else if (message.type === "flap") {
       entry.source = message.source;
     }
     this.runLog.push(entry);
   }
 
+  recordSnapshotResponse(message) {
+    const receivedAtMs = performance.now() - this.runStartPerf;
+    const atMs = Number.isFinite(message.traceAtMs)
+      ? clamp(message.traceAtMs, 0, 600000)
+      : receivedAtMs;
+    const challengeId = typeof message.challengeId === "string" ? message.challengeId : "";
+    const challenge = this.pendingSnapshotChallenges.get(challengeId);
+    const imageAudit = auditSnapshotImage(message.image);
+    const entry = {
+      type: "snapshot",
+      id: challengeId,
+      atMs,
+      receivedAtMs,
+      issuedAtMs: challenge?.issuedAtMs ?? null,
+      deadlineAtMs: challenge?.deadlineAtMs ?? null,
+      responseLatencyMs: challenge ? receivedAtMs - challenge.issuedAtMs : null,
+      leftY: normalizedOrNull(message.leftY),
+      rightY: normalizedOrNull(message.rightY),
+      handCount: clampInteger(message.handCount, 0, 2),
+      image: imageAudit,
+      error: typeof message.error === "string" ? message.error.slice(0, 120) : "",
+    };
+
+    this.runLog.push(entry);
+    if (challenge) {
+      this.pendingSnapshotChallenges.delete(challengeId);
+      this.scheduleNextSnapshotChallenge(performance.now());
+    }
+
+    this.send({
+      type: "snapshot_result",
+      challengeId,
+      accepted: Boolean(challenge) && imageAudit.valid,
+      message: Boolean(challenge) && imageAudit.valid ? imageAudit.message : PUBLIC_SNAPSHOT_FAILURE,
+    });
+  }
+
+  recordVideoFrame(message) {
+    const receivedAtMs = performance.now() - this.runStartPerf;
+    const atMs = Number.isFinite(message.traceAtMs)
+      ? clamp(message.traceAtMs, 0, VIDEO_VERIFY.maxFrameMs)
+      : receivedAtMs;
+    const imageAudit = auditSnapshotImage(message.image);
+    const entry = {
+      type: "video_frame",
+      id: `${this.id}:video:${++this.videoFrameSeq}`,
+      sequence: Number.isFinite(message.sequence)
+        ? clampInteger(message.sequence, 0, 10000000)
+        : this.videoFrameSeq,
+      atMs,
+      receivedAtMs,
+      leftY: normalizedOrNull(message.leftY),
+      rightY: normalizedOrNull(message.rightY),
+      handCount: clampInteger(message.handCount, 0, 2),
+      image: imageAudit,
+      landmarkOk: false,
+      landmarkPending: false,
+      landmarkMessage: imageAudit.valid ? "pending" : imageAudit.message,
+    };
+
+    this.runLog.push(entry);
+    if (!imageAudit.valid || SNAPSHOT_LANDMARKS.mode === "off" || !SNAPSHOT_LANDMARKS.serviceUrl) {
+      return;
+    }
+
+    entry.landmarkPending = true;
+    const task = extractSnapshotLandmarks(entry)
+      .then((extracted) => {
+        entry.landmarkPending = false;
+        entry.landmarkOk =
+          extracted.ok &&
+          extracted.handCount >= 2 &&
+          Number.isFinite(extracted.leftY) &&
+          Number.isFinite(extracted.rightY);
+        entry.landmarkMessage = extracted.ok
+          ? "server video landmarks extracted."
+          : extracted.message;
+        if (entry.landmarkOk) {
+          entry.serverLeftY = extracted.leftY;
+          entry.serverRightY = extracted.rightY;
+          entry.serverHandCount = extracted.handCount;
+        }
+      })
+      .catch((error) => {
+        entry.landmarkPending = false;
+        entry.landmarkOk = false;
+        entry.landmarkMessage = error?.message || "server video landmark extraction failed.";
+      })
+      .finally(() => {
+        this.pendingVideoFrameTasks.delete(task);
+      });
+    this.pendingVideoFrameTasks.add(task);
+  }
+
+  async waitForVideoFrameExtractions() {
+    if (this.pendingVideoFrameTasks.size === 0) {
+      return;
+    }
+    await Promise.allSettled([...this.pendingVideoFrameTasks]);
+  }
+
+  maybeIssueSnapshotChallenge(now = performance.now()) {
+    if (
+      !SNAPSHOT_CHALLENGES.enabled ||
+      !this.clientSim ||
+      !this.runHasHandSamples ||
+      this.closed
+    ) {
+      return;
+    }
+
+    for (const [challengeId, challenge] of this.pendingSnapshotChallenges) {
+      if (now - this.runStartPerf > challenge.deadlineAtMs) {
+        this.pendingSnapshotChallenges.delete(challengeId);
+        this.scheduleNextSnapshotChallenge(now);
+      }
+    }
+
+    if (
+      this.pendingSnapshotChallenges.size >= SNAPSHOT_CHALLENGES.maxOutstanding ||
+      now < this.nextSnapshotChallengeAt
+    ) {
+      return;
+    }
+
+    const issuedAtMs = now - this.runStartPerf;
+    const challengeId = `${this.id}:${++this.snapshotChallengeSeq}`;
+    const challenge = {
+      id: challengeId,
+      issuedAtMs,
+      deadlineAtMs: issuedAtMs + SNAPSHOT_CHALLENGES.deadlineMs,
+    };
+    this.pendingSnapshotChallenges.set(challengeId, challenge);
+    this.runLog.push({
+      type: "snapshot_challenge",
+      id: challengeId,
+      atMs: issuedAtMs,
+      issuedAtMs,
+      deadlineAtMs: challenge.deadlineAtMs,
+    });
+    this.send({
+      type: "snapshot_challenge",
+      challengeId,
+      serverTime: Date.now(),
+      traceAtMs: Math.round(issuedAtMs),
+      deadlineMs: SNAPSHOT_CHALLENGES.deadlineMs,
+    });
+  }
+
+  scheduleNextSnapshotChallenge(now = performance.now()) {
+    const min = Math.max(0, Math.round(SNAPSHOT_CHALLENGES.minIntervalMs));
+    const max = Math.max(min + 1, Math.round(SNAPSHOT_CHALLENGES.maxIntervalMs));
+    this.nextSnapshotChallengeAt = now + randomInt(min, max + 1);
+  }
+
   /** Replay the session log when claimed score exceeds VERIFY_SCORE_THRESHOLD. */
-  handleFinish(message) {
+  async handleFinish(message) {
     const claimedScore = clampInteger(message.score, 0, WIN_SCORE);
     if (claimedScore <= VERIFY_SCORE_THRESHOLD) {
       this.send({
@@ -455,13 +771,18 @@ class GameSocket {
       return;
     }
 
-    const result = GameSession.verifyRecordedRun(this.runLog, claimedScore);
+    await this.waitForVideoFrameExtractions();
+    const result = await GameSession.verifyRecordedRun(this.runLog, claimedScore);
     if (result.valid) {
       this.game.best = Math.max(this.game.best, result.score);
     }
 
     if (result.blocked) {
-      this.close(1008, result.message);
+      this.game.log(
+        `Verification blocked: ${result.detail || result.message || "anti-cheat failure"}`,
+        "warn",
+      );
+      this.close(1008, PUBLIC_ANTI_CHEAT_FAILURE);
       return;
     }
 
@@ -516,7 +837,12 @@ class GameSocket {
   }
 
   tick(dt, now) {
-    if (this.closed || this.clientSim) {
+    if (this.closed) {
+      return;
+    }
+
+    if (this.clientSim) {
+      this.maybeIssueSnapshotChallenge(now);
       return;
     }
     this.game.tick(dt, now);
@@ -585,11 +911,10 @@ class GameSession {
     this.playerId = playerId;
     this.best = 0;
     this.gesture = new ServerGestureInterpreter({
-      onFlap: (time) => {
-        if (this.verifyReplay) {
-          return;
-        }
-        this.flap("67 gesture", time);
+      onFlap: (event) => {
+        const triggerAtMs =
+          typeof event === "object" && event !== null ? event.triggerAtMs : event;
+        this.flap("67 gesture", triggerAtMs);
       },
       config: GESTURE_CONFIG,
     });
@@ -610,6 +935,7 @@ class GameSession {
     this.lastSuspicionDetail = "";
     this.lastSuspicionAt = 0;
     this.lastSuspicionKey = "";
+    this.gestureSignatures = [];
     if (!this.verifyReplay) {
       this.claimedScore = 0;
     }
@@ -825,6 +1151,7 @@ class GameSession {
       antiCheatScore: this.antiCheatScore,
       antiCheatLastUpdateAt: this.antiCheatLastUpdateAt,
       antiCheatCooldowns: { ...this.antiCheatCooldowns },
+      gestureSignatures: this.gestureSignatures.map((signature) => ({ ...signature })),
       nextPipeId: this.nextPipeId,
       pipes: this.pipes.map((pipe) => ({ ...pipe })),
     };
@@ -844,6 +1171,7 @@ class GameSession {
     this.antiCheatScore = snapshot.antiCheatScore;
     this.antiCheatLastUpdateAt = snapshot.antiCheatLastUpdateAt;
     this.antiCheatCooldowns = { ...snapshot.antiCheatCooldowns };
+    this.gestureSignatures = (snapshot.gestureSignatures || []).map((signature) => ({ ...signature }));
     this.nextPipeId = snapshot.nextPipeId;
     this.pipes = snapshot.pipes.map((pipe) => ({ ...pipe }));
   }
@@ -1000,6 +1328,17 @@ class GameSession {
     };
   }
 
+  static failedAntiCheatSnapshot({ key = "", message = "", blocked = false } = {}) {
+    return {
+      enabled: !DISABLE_ANTI_CHEAT,
+      score: blocked ? ANTI_CHEAT.blockScore : 0,
+      blockScore: ANTI_CHEAT.blockScore,
+      level: blocked ? "blocked" : "warning",
+      message: blocked ? PUBLIC_ANTI_CHEAT_FAILURE : message,
+      lastHeuristic: blocked ? "anti-cheat" : key,
+    };
+  }
+
   antiCheatSnapshot() {
     if (DISABLE_ANTI_CHEAT) {
       return GameSession.disabledAntiCheatSnapshot();
@@ -1054,6 +1393,11 @@ class GameSession {
 
     if (recent.length < 2) {
       return null;
+    }
+
+    const templateVerdict = this.auditGestureTemplate(recent, now);
+    if (templateVerdict) {
+      return templateVerdict;
     }
 
     const excursionAmplitudes = recent
@@ -1123,6 +1467,40 @@ class GameSession {
     return null;
   }
 
+  auditGestureTemplate(recent, now) {
+    const signature = gestureLeadupSignature(
+      recent,
+      now,
+      ANTI_CHEAT.gestureTemplate.windowMs,
+      ANTI_CHEAT.gestureTemplate.bins,
+      ANTI_CHEAT.gestureTemplate.minSamples,
+    );
+    if (!signature) {
+      return null;
+    }
+
+    const closeMatches = this.gestureSignatures.filter(
+      (previous) =>
+        gestureSignatureDistance(previous.values, signature.values) <=
+        ANTI_CHEAT.gestureTemplate.maxRmsDistance,
+    ).length;
+
+    this.gestureSignatures.push(signature);
+    this.gestureSignatures = this.gestureSignatures.slice(-ANTI_CHEAT.gestureTemplate.historySize);
+
+    if (closeMatches >= ANTI_CHEAT.gestureTemplate.repeatThreshold) {
+      return this.addSuspicion(
+        ANTI_CHEAT.gestureTemplate.score,
+        "template",
+        "gesture leadup repeats the same movement template too closely.",
+        now,
+        ANTI_CHEAT.gestureTemplate.cooldownMs,
+      );
+    }
+
+    return null;
+  }
+
   tick(dt, now) {
     if (this.gameOver || this.awaitingStart) {
       return;
@@ -1170,14 +1548,418 @@ class GameSession {
     console.log(`[${level}] ${this.playerId}: ${message}`);
   }
 
+  static auditServerVideoStream(events) {
+    if (DISABLE_ANTI_CHEAT || SPACE_67_KEYBOARD || VIDEO_VERIFY.mode === "off") {
+      return null;
+    }
+
+    if (!SNAPSHOT_LANDMARKS.serviceUrl && VIDEO_VERIFY.mode === "required") {
+      return cameraTraceBlocked("video", "server-side video landmark extractor is not configured.");
+    }
+
+    const frames = events
+      .filter((event) => event.type === "video_frame")
+      .sort((left, right) => left.atMs - right.atMs);
+    if (frames.length < VIDEO_VERIFY.minFrames) {
+      return cameraTraceBlocked("video", "server video stream has too few frames for verification.");
+    }
+
+    const firstFrame = frames[0];
+    const lastFrame = frames.at(-1);
+    const durationMs = Math.max(0, lastFrame.atMs - firstFrame.atMs);
+    const requiredFrames = Math.max(
+      VIDEO_VERIFY.minFrames,
+      Math.floor((durationMs / 1000) * VIDEO_VERIFY.minAverageFps),
+    );
+    if (frames.length < requiredFrames) {
+      return cameraTraceBlocked("video", "server video stream is too sparse for a live run.");
+    }
+
+    const frameGaps = positiveDeltas(frames.map((frame) => frame.atMs));
+    if (frameGaps.length > 0) {
+      if (percentile(frameGaps, 0.5) > VIDEO_VERIFY.maxMedianFrameGapMs) {
+        return cameraTraceBlocked("video", "server video stream has poor median frame cadence.");
+      }
+      if (percentile(frameGaps, 0.9) > VIDEO_VERIFY.maxP90FrameGapMs) {
+        return cameraTraceBlocked("video", "server video stream has repeated long frame gaps.");
+      }
+      if (percentile(frameGaps, 0.99) > VIDEO_VERIFY.maxP99FrameGapMs) {
+        return cameraTraceBlocked("video", "server video stream has a cut or large missing-frame gap.");
+      }
+    }
+
+    const imageFrames = frames.filter((frame) => frame.image?.valid);
+    if (imageFrames.length < VIDEO_VERIFY.minValidFrames) {
+      return cameraTraceBlocked("video", "server video stream has too few valid camera images.");
+    }
+
+    const hashes = imageFrames.map((frame) => frame.image.hash).filter(Boolean);
+    const uniqueHashes = new Set(hashes).size;
+    const duplicateRatio = hashes.length > 0 ? 1 - uniqueHashes / hashes.length : 1;
+    const uniqueHashRatio = hashes.length > 0 ? uniqueHashes / hashes.length : 0;
+    if (
+      duplicateRatio > VIDEO_VERIFY.maxDuplicateHashRatio ||
+      uniqueHashRatio < VIDEO_VERIFY.minUniqueHashRatio
+    ) {
+      return cameraTraceBlocked("video", "server video frames repeat too often for live camera input.");
+    }
+
+    const serverHands = GameSession.serverVideoHandFrames(events);
+    if (serverHands.length < VIDEO_VERIFY.minValidFrames) {
+      return cameraTraceBlocked("video", "server video landmark extraction did not find enough two-hand frames.");
+    }
+
+    const clientMismatch = GameSession.auditVideoClientAnchorAgreement(events, serverHands);
+    if (clientMismatch) {
+      return clientMismatch;
+    }
+
+    const cutVerdict = GameSession.auditServerVideoContinuity(serverHands);
+    if (cutVerdict) {
+      return cutVerdict;
+    }
+
+    return null;
+  }
+
+  static serverVideoHandFrames(events) {
+    return events
+      .filter(
+        (event) =>
+          event.type === "video_frame" &&
+          event.landmarkOk &&
+          event.serverHandCount >= 2 &&
+          Number.isFinite(event.serverLeftY) &&
+          Number.isFinite(event.serverRightY),
+      )
+      .map((event) => ({
+        type: "hands",
+        atMs: event.atMs,
+        receivedAtMs: event.receivedAtMs,
+        leftY: event.serverLeftY,
+        rightY: event.serverRightY,
+        handCount: 2,
+        source: "server-video",
+      }))
+      .sort((left, right) => left.atMs - right.atMs);
+  }
+
+  static canonicalizeEventsFromServerVideo(events) {
+    if (DISABLE_ANTI_CHEAT || SPACE_67_KEYBOARD || VIDEO_VERIFY.mode === "off") {
+      return events;
+    }
+
+    const serverHands = GameSession.serverVideoHandFrames(events);
+    if (serverHands.length < VIDEO_VERIFY.minValidFrames) {
+      return events;
+    }
+
+    const nonClientHands = events.filter((event) => event.type !== "hands");
+    return [...nonClientHands, ...serverHands].sort((left, right) => left.atMs - right.atMs);
+  }
+
+  static auditVideoClientAnchorAgreement(events, serverHands) {
+    const clientHands = events
+      .filter(
+        (event) =>
+          event.type === "hands" &&
+          event.handCount >= 2 &&
+          Number.isFinite(event.leftY) &&
+          Number.isFinite(event.rightY),
+      )
+      .sort((left, right) => left.atMs - right.atMs);
+
+    if (clientHands.length === 0) {
+      return null;
+    }
+
+    let compared = 0;
+    let mismatches = 0;
+    for (const frame of serverHands) {
+      const sample = nearestHandSampleAt(clientHands, frame.atMs, VIDEO_VERIFY.maxClientFrameOffsetMs);
+      if (!sample) {
+        continue;
+      }
+      compared += 1;
+      if (
+        Math.abs(sample.leftY - frame.leftY) > VIDEO_VERIFY.maxClientAnchorDelta ||
+        Math.abs(sample.rightY - frame.rightY) > VIDEO_VERIFY.maxClientAnchorDelta
+      ) {
+        mismatches += 1;
+      }
+    }
+
+    if (compared >= Math.min(20, serverHands.length) && mismatches / compared > 0.18) {
+      return cameraTraceBlocked("video", "client hand trace does not match server-extracted video landmarks.");
+    }
+    return null;
+  }
+
+  static auditServerVideoContinuity(serverHands) {
+    const leftValues = serverHands.map((frame) => frame.leftY);
+    const rightValues = serverHands.map((frame) => frame.rightY);
+    const motionRange =
+      Math.max(...leftValues) - Math.min(...leftValues) +
+      Math.max(...rightValues) - Math.min(...rightValues);
+    if (motionRange < VIDEO_VERIFY.minMotionRange) {
+      return cameraTraceBlocked("video", "server video landmarks are too static for a human 67 run.");
+    }
+
+    let compared = 0;
+    let moving = 0;
+    for (let index = 1; index < serverHands.length; index += 1) {
+      const previous = serverHands[index - 1];
+      const current = serverHands[index];
+      const dt = current.atMs - previous.atMs;
+      if (dt <= 0) {
+        continue;
+      }
+      const distance = Math.hypot(
+        current.leftY - previous.leftY,
+        current.rightY - previous.rightY,
+      );
+      compared += 1;
+      if (distance >= VIDEO_VERIFY.motionEpsilon) {
+        moving += 1;
+      }
+      if (dt <= VIDEO_VERIFY.shortGapJumpMs && distance > VIDEO_VERIFY.maxShortGapJump) {
+        return cameraTraceBlocked("video", "server video landmarks contain an implausible cut-frame jump.");
+      }
+    }
+
+    if (compared > 0 && moving / compared < VIDEO_VERIFY.minMovingFrameRatio) {
+      return cameraTraceBlocked("video", "server video landmarks look like still or nearly-still hand images.");
+    }
+
+    return auditHumanMotionTexture(serverHands);
+  }
+
+  static async auditSnapshotChallenges(events) {
+    if (!SNAPSHOT_CHALLENGES.enabled || DISABLE_ANTI_CHEAT || SPACE_67_KEYBOARD) {
+      return null;
+    }
+
+    const challenges = events.filter((event) => event.type === "snapshot_challenge");
+    const snapshots = events.filter((event) => event.type === "snapshot");
+    if (challenges.length < SNAPSHOT_CHALLENGES.minRequired) {
+      return cameraTraceBlocked("snapshot", "not enough live camera snapshot challenges were completed.");
+    }
+
+    const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+    const seenHashes = new Set();
+    for (const challenge of challenges) {
+      const snapshot = snapshotsById.get(challenge.id);
+      if (!snapshot) {
+        return cameraTraceBlocked("snapshot", "live camera snapshot challenge was missed.");
+      }
+
+      if (
+        Number.isFinite(snapshot.responseLatencyMs) &&
+        snapshot.responseLatencyMs > SNAPSHOT_CHALLENGES.deadlineMs
+      ) {
+        return cameraTraceBlocked("snapshot", "live camera snapshot arrived after the challenge deadline.");
+      }
+      if (
+        Number.isFinite(snapshot.receivedAtMs) &&
+        Number.isFinite(challenge.deadlineAtMs) &&
+        snapshot.receivedAtMs > challenge.deadlineAtMs
+      ) {
+        return cameraTraceBlocked("snapshot", "live camera snapshot arrived after the challenge deadline.");
+      }
+
+      if (!snapshot.image?.valid) {
+        return cameraTraceBlocked(
+          "snapshot",
+          snapshot.image?.message || "live camera snapshot image failed validation.",
+        );
+      }
+
+      const landmarkVerdict = await auditSnapshotLandmarks(snapshot);
+      if (landmarkVerdict) {
+        return landmarkVerdict;
+      }
+
+      if (seenHashes.has(snapshot.image.hash)) {
+        return cameraTraceBlocked("snapshot", "live camera snapshot image was reused.");
+      }
+      seenHashes.add(snapshot.image.hash);
+
+      if (
+        snapshot.handCount < 2 ||
+        !Number.isFinite(snapshot.leftY) ||
+        !Number.isFinite(snapshot.rightY)
+      ) {
+        return cameraTraceBlocked("snapshot", "live camera snapshot did not include two tracked hands.");
+      }
+
+      const nearestHandSample = nearestHandSampleAt(events, snapshot.atMs);
+      if (!nearestHandSample) {
+        return cameraTraceBlocked("snapshot", "live camera snapshot has no matching hand sample.");
+      }
+
+      if (
+        Math.abs(nearestHandSample.leftY - snapshot.leftY) >
+        SNAPSHOT_CHALLENGES.maxSnapshotHandDelta ||
+        Math.abs(nearestHandSample.rightY - snapshot.rightY) >
+        SNAPSHOT_CHALLENGES.maxSnapshotHandDelta
+      ) {
+        return cameraTraceBlocked("snapshot", "snapshot hand sample does not match the replay trace.");
+      }
+    }
+
+    return null;
+  }
+
+  static auditRecordedCameraTrace(events) {
+    const gameplayEvents = events.filter((event) => event.type !== "restart");
+    const explicitFlap = gameplayEvents.find((event) => event.type === "flap");
+    if (explicitFlap && !SPACE_67_KEYBOARD) {
+      return {
+        blocked: false,
+        key: "explicit-flap",
+        message:
+          "Verification failed: camera runs must derive flaps from hand samples; explicit flap events are not trusted.",
+      };
+    }
+
+    if (DISABLE_ANTI_CHEAT || SPACE_67_KEYBOARD) {
+      return null;
+    }
+
+    const hands = gameplayEvents
+      .filter((event) => event.type === "hands")
+      .sort((left, right) => left.atMs - right.atMs);
+    if (hands.length < ANTI_CHEAT.cameraTrace.minSamples) {
+      return cameraTraceBlocked("coverage", "camera trace has too few hand samples for a verified run.");
+    }
+
+    const firstHand = hands[0];
+    const lastHand = hands.at(-1);
+    const durationMs = Math.max(0, lastHand.atMs - firstHand.atMs);
+    const requiredSamples = Math.max(
+      ANTI_CHEAT.cameraTrace.minSamples,
+      Math.floor((durationMs / 1000) * ANTI_CHEAT.cameraTrace.minAverageSampleHz),
+    );
+    if (hands.length < requiredSamples) {
+      return cameraTraceBlocked("coverage", "camera trace is too sparse for a human-paced run.");
+    }
+
+    const timestampBurst = maxSameTimestampRun(hands);
+    if (timestampBurst > ANTI_CHEAT.cameraTrace.maxSameTimestampSamples) {
+      return cameraTraceBlocked("timestamps", "too many hand samples share the same replay timestamp.");
+    }
+
+    const sampleGaps = positiveDeltas(hands.map((event) => event.atMs));
+    if (sampleGaps.length > 0) {
+      const medianGap = percentile(sampleGaps, 0.5);
+      const p90Gap = percentile(sampleGaps, 0.9);
+      const p99Gap = percentile(sampleGaps, 0.99);
+      if (medianGap > ANTI_CHEAT.cameraTrace.maxMedianSampleGapMs) {
+        return cameraTraceBlocked("cadence", "camera samples are not continuous enough for verification.");
+      }
+      if (p90Gap > ANTI_CHEAT.cameraTrace.maxP90SampleGapMs) {
+        return cameraTraceBlocked("cadence", "camera trace has repeated long gaps between hand samples.");
+      }
+      if (p99Gap > ANTI_CHEAT.cameraTrace.maxP99SampleGapMs) {
+        return cameraTraceBlocked("cadence", "camera trace has implausibly large hand-sample gaps.");
+      }
+    }
+
+    const pairedHands = hands.filter(
+      (event) =>
+        event.handCount >= 2 &&
+        Number.isFinite(event.leftY) &&
+        Number.isFinite(event.rightY),
+    );
+    if (pairedHands.length >= ANTI_CHEAT.cameraTrace.minVariabilitySamples) {
+      const uniquePairs = new Set(
+        pairedHands.map((event) => `${event.leftY.toFixed(4)}:${event.rightY.toFixed(4)}`),
+      ).size;
+      const uniqueRatio = uniquePairs / pairedHands.length;
+      if (
+        uniquePairs < ANTI_CHEAT.cameraTrace.minUniquePairs ||
+        uniqueRatio < ANTI_CHEAT.cameraTrace.minUniquePairRatio
+      ) {
+        return cameraTraceBlocked("variability", "hand positions repeat too exactly for live camera input.");
+      }
+    }
+
+    const motionTextureVerdict = auditHumanMotionTexture(pairedHands);
+    if (motionTextureVerdict) {
+      return motionTextureVerdict;
+    }
+
+    const timedHands = hands.filter(
+      (event) => Number.isFinite(event.receivedAtMs) && Number.isFinite(event.atMs),
+    );
+    if (timedHands.length >= 2) {
+      const firstTimed = timedHands[0];
+      const lastTimed = timedHands.at(-1);
+      const traceElapsedMs = lastTimed.atMs - firstTimed.atMs;
+      const wallElapsedMs = lastTimed.receivedAtMs - firstTimed.receivedAtMs;
+      if (
+        traceElapsedMs >= ANTI_CHEAT.cameraTrace.minWallAuditDurationMs &&
+        wallElapsedMs + ANTI_CHEAT.cameraTrace.maxWallClockLeadMs <
+        traceElapsedMs * ANTI_CHEAT.cameraTrace.minWallClockRatio
+      ) {
+        return cameraTraceBlocked("wall-clock", "camera trace was replayed faster than live human input.");
+      }
+    }
+
+    return null;
+  }
+
   /** Deterministic replay of a client-sim input log for score + anti-cheat validation. */
-  static verifyRecordedRun(runLog, claimedScore) {
+  static async verifyRecordedRun(runLog, claimedScore) {
+    const rawEvents = [...runLog].sort((left, right) => left.atMs - right.atMs);
+    const videoVerdict = GameSession.auditServerVideoStream(rawEvents);
+    if (videoVerdict) {
+      return {
+        valid: false,
+        blocked: videoVerdict.blocked,
+        score: 0,
+        won: false,
+        flag: "",
+        message: publicVerdictMessage(videoVerdict),
+        detail: detailedVerdictMessage(videoVerdict),
+        antiCheat: GameSession.failedAntiCheatSnapshot(videoVerdict),
+      };
+    }
+
+    const events = GameSession.canonicalizeEventsFromServerVideo(rawEvents);
+    const snapshotVerdict = await GameSession.auditSnapshotChallenges(events);
+    if (snapshotVerdict) {
+      return {
+        valid: false,
+        blocked: snapshotVerdict.blocked,
+        score: 0,
+        won: false,
+        flag: "",
+        message: publicVerdictMessage(snapshotVerdict),
+        detail: detailedVerdictMessage(snapshotVerdict),
+        antiCheat: GameSession.failedAntiCheatSnapshot(snapshotVerdict),
+      };
+    }
+
+    const traceVerdict = GameSession.auditRecordedCameraTrace(events);
+    if (traceVerdict) {
+      return {
+        valid: false,
+        blocked: traceVerdict.blocked,
+        score: 0,
+        won: false,
+        flag: "",
+        message: publicVerdictMessage(traceVerdict),
+        detail: detailedVerdictMessage(traceVerdict),
+        antiCheat: GameSession.failedAntiCheatSnapshot(traceVerdict),
+      };
+    }
+
     const replay = new GameSession("verify");
     replay.reset();
     replay.verifyReplay = true;
     replay.claimedScore = claimedScore;
 
-    const events = [...runLog].sort((left, right) => left.atMs - right.atMs);
     let simMs = 0;
 
     const advanceTo = (targetMs) => {
@@ -1213,10 +1995,18 @@ class GameSession {
           },
           event.atMs,
         );
+        if (replay.disconnectReason) {
+          break;
+        }
         continue;
       }
 
       if (event.type === "flap") {
+        if (!SPACE_67_KEYBOARD) {
+          replay.disconnectReason =
+            "Verification failed: explicit flap events are not valid camera input.";
+          break;
+        }
         replay.flap(event.source === "gesture" ? "67 gesture" : "manual input", event.atMs);
         if (replay.disconnectReason) {
           break;
@@ -1247,7 +2037,7 @@ class GameSession {
 }
 
 class ServerGestureInterpreter {
-  constructor({ onFlap = () => {}, config = {} } = {}) {
+  constructor({ onFlap = () => { }, config = {} } = {}) {
     this.config = { ...GESTURE_CONFIG, ...config };
     this.onFlap = onFlap;
     this.reset();
@@ -1333,7 +2123,10 @@ class ServerGestureInterpreter {
       }
 
       if (this.crossCount >= this.config.minCrossesPerFlap) {
-        this.onFlap(this.sequenceStartedAt ?? this.lastCrossAt ?? now);
+        this.onFlap({
+          triggerAtMs: now,
+          auditAtMs: this.sequenceStartedAt ?? this.lastCrossAt ?? now,
+        });
         this.lastJumpAt = now;
         this.crossCount = 0;
         this.sequenceStartedAt = null;
@@ -1584,12 +2377,555 @@ function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
 function coefficientOfVariation(values) {
   const mean = average(values);
   if (mean === 0) {
     return Infinity;
   }
   return standardDeviation(values) / Math.abs(mean);
+}
+
+function percentile(values, p) {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)));
+  return sorted[index];
+}
+
+function positiveDeltas(values) {
+  const deltas = [];
+  for (let index = 1; index < values.length; index += 1) {
+    const delta = values[index] - values[index - 1];
+    if (delta > 0) {
+      deltas.push(delta);
+    }
+  }
+  return deltas;
+}
+
+function maxSameTimestampRun(events) {
+  let maxRun = 0;
+  let currentRun = 0;
+  let previousAtMs = null;
+
+  for (const event of events) {
+    const atMs = Math.round(event.atMs);
+    if (atMs === previousAtMs) {
+      currentRun += 1;
+    } else {
+      currentRun = 1;
+      previousAtMs = atMs;
+    }
+    maxRun = Math.max(maxRun, currentRun);
+  }
+
+  return maxRun;
+}
+
+function cameraTraceBlocked(key, message) {
+  return {
+    blocked: true,
+    key,
+    message: PUBLIC_ANTI_CHEAT_FAILURE,
+    detail: `Disconnected: ${message}`,
+  };
+}
+
+function publicVerdictMessage(verdict) {
+  return verdict?.blocked ? PUBLIC_ANTI_CHEAT_FAILURE : verdict?.message || "";
+}
+
+function detailedVerdictMessage(verdict) {
+  return verdict?.detail || verdict?.message || "";
+}
+
+function auditSnapshotImage(image) {
+  if (typeof image !== "string" || image.length === 0) {
+    return {
+      valid: false,
+      message: "live camera snapshot image is missing.",
+    };
+  }
+
+  const match = image.match(/^data:image\/(jpeg|jpg|png);base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) {
+    return {
+      valid: false,
+      message: "live camera snapshot image format is unsupported.",
+    };
+  }
+
+  let bytes;
+  try {
+    bytes = Buffer.from(match[2], "base64");
+  } catch {
+    return {
+      valid: false,
+      message: "live camera snapshot image could not be decoded.",
+    };
+  }
+
+  if (bytes.length < SNAPSHOT_CHALLENGES.minBytes) {
+    return {
+      valid: false,
+      bytes: bytes.length,
+      message: "live camera snapshot image is too small.",
+    };
+  }
+  if (bytes.length > SNAPSHOT_CHALLENGES.maxBytes) {
+    return {
+      valid: false,
+      bytes: bytes.length,
+      message: "live camera snapshot image is too large.",
+    };
+  }
+
+  const mime = match[1] === "jpg" ? "jpeg" : match[1];
+  const dimensions =
+    mime === "png" ? pngDimensions(bytes) : jpegDimensions(bytes);
+  if (!dimensions) {
+    return {
+      valid: false,
+      bytes: bytes.length,
+      message: "live camera snapshot image dimensions are invalid.",
+    };
+  }
+
+  if (
+    dimensions.width < SNAPSHOT_CHALLENGES.minWidth ||
+    dimensions.height < SNAPSHOT_CHALLENGES.minHeight
+  ) {
+    return {
+      valid: false,
+      bytes: bytes.length,
+      ...dimensions,
+      message: "live camera snapshot image resolution is too low.",
+    };
+  }
+
+  const stats = compressedByteStats(bytes);
+  if (
+    stats.entropy < SNAPSHOT_CHALLENGES.minEntropy ||
+    stats.uniqueBytes < SNAPSHOT_CHALLENGES.minUniqueBytes
+  ) {
+    return {
+      valid: false,
+      bytes: bytes.length,
+      ...dimensions,
+      ...stats,
+      message: "live camera snapshot image lacks enough visual detail.",
+    };
+  }
+
+  return {
+    valid: true,
+    message: "snapshot accepted.",
+    mime,
+    dataUrl: image,
+    bytes: bytes.length,
+    ...dimensions,
+    ...stats,
+    hash: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+function jpegDimensions(bytes) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return null;
+  }
+
+  let offset = 2;
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+
+    const marker = bytes[offset + 1];
+    offset += 2;
+    if (marker === 0xd9 || marker === 0xda) {
+      break;
+    }
+    if (offset + 2 > bytes.length) {
+      return null;
+    }
+    const segmentLength = bytes.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) {
+      return null;
+    }
+
+    if (
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    ) {
+      if (segmentLength < 7) {
+        return null;
+      }
+      return {
+        height: bytes.readUInt16BE(offset + 3),
+        width: bytes.readUInt16BE(offset + 5),
+      };
+    }
+
+    offset += segmentLength;
+  }
+
+  return null;
+}
+
+function pngDimensions(bytes) {
+  const signature = "89504e470d0a1a0a";
+  if (bytes.length < 24 || bytes.subarray(0, 8).toString("hex") !== signature) {
+    return null;
+  }
+  return {
+    width: bytes.readUInt32BE(16),
+    height: bytes.readUInt32BE(20),
+  };
+}
+
+function compressedByteStats(bytes) {
+  const counts = new Array(256).fill(0);
+  for (const byte of bytes) {
+    counts[byte] += 1;
+  }
+
+  let entropy = 0;
+  let uniqueBytes = 0;
+  for (const count of counts) {
+    if (count === 0) {
+      continue;
+    }
+    uniqueBytes += 1;
+    const probability = count / bytes.length;
+    entropy -= probability * Math.log2(probability);
+  }
+
+  return {
+    entropy: Math.round(entropy * 100) / 100,
+    uniqueBytes,
+  };
+}
+
+function nearestHandSampleAt(events, atMs, maxOffsetMs = SNAPSHOT_CHALLENGES.maxHandSampleOffsetMs) {
+  let best = null;
+  let bestDelta = Infinity;
+  for (const event of events) {
+    if (
+      event.type !== "hands" ||
+      event.handCount < 2 ||
+      !Number.isFinite(event.leftY) ||
+      !Number.isFinite(event.rightY)
+    ) {
+      continue;
+    }
+
+    const delta = Math.abs(event.atMs - atMs);
+    if (delta < bestDelta) {
+      best = event;
+      bestDelta = delta;
+    }
+  }
+
+  return bestDelta <= maxOffsetMs ? best : null;
+}
+
+async function auditSnapshotLandmarks(snapshot) {
+  if (SNAPSHOT_LANDMARKS.mode === "off") {
+    return null;
+  }
+
+  if (!SNAPSHOT_LANDMARKS.serviceUrl) {
+    if (SNAPSHOT_LANDMARKS.mode === "required") {
+      return cameraTraceBlocked("landmark", "server-side hand landmark extractor is not configured.");
+    }
+    return null;
+  }
+
+  const extracted = await extractSnapshotLandmarks(snapshot);
+  if (!extracted.ok) {
+    if (SNAPSHOT_LANDMARKS.mode === "required") {
+      return cameraTraceBlocked("landmark", extracted.message);
+    }
+    return null;
+  }
+
+  if (
+    extracted.handCount < 2 ||
+    !Number.isFinite(extracted.leftY) ||
+    !Number.isFinite(extracted.rightY)
+  ) {
+    return cameraTraceBlocked("landmark", "server-side landmark extraction did not find two hands.");
+  }
+
+  if (
+    Math.abs(extracted.leftY - snapshot.leftY) > SNAPSHOT_LANDMARKS.maxAnchorDelta ||
+    Math.abs(extracted.rightY - snapshot.rightY) > SNAPSHOT_LANDMARKS.maxAnchorDelta
+  ) {
+    return cameraTraceBlocked("landmark", "server-side image landmarks do not match submitted hand anchors.");
+  }
+
+  return null;
+}
+
+async function extractSnapshotLandmarks(snapshot) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SNAPSHOT_LANDMARKS.timeoutMs);
+  try {
+    const response = await fetch(SNAPSHOT_LANDMARKS.serviceUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        challengeId: snapshot.id,
+        image: snapshot.image.dataUrl,
+        width: snapshot.image.width,
+        height: snapshot.image.height,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        message: `server-side landmark extractor returned HTTP ${response.status}.`,
+      };
+    }
+
+    const payload = await response.json();
+    const normalized = normalizeExtractedLandmarks(payload);
+    if (!normalized) {
+      return {
+        ok: false,
+        message: "server-side landmark extractor returned no usable hand anchors.",
+      };
+    }
+
+    return {
+      ok: true,
+      ...normalized,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message:
+        error.name === "AbortError"
+          ? "server-side landmark extractor timed out."
+          : "server-side landmark extractor failed.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeExtractedLandmarks(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  if (Number.isFinite(payload.leftY) && Number.isFinite(payload.rightY)) {
+    return {
+      handCount: clampInteger(payload.handCount ?? 2, 0, 2),
+      leftY: clamp(payload.leftY, 0, 1),
+      rightY: clamp(payload.rightY, 0, 1),
+    };
+  }
+
+  const rawHands = Array.isArray(payload.hands) ? payload.hands : [];
+  const bySide = [null, null];
+  for (const hand of rawHands) {
+    const landmarks = Array.isArray(hand) ? hand : hand?.landmarks;
+    const anchor = handAnchorFromLandmarks(landmarks);
+    if (!anchor) {
+      continue;
+    }
+    const side = anchor.x >= 0.5 ? 0 : 1;
+    bySide[side] = anchor;
+  }
+
+  const [leftAnchor, rightAnchor] = bySide;
+  if (!leftAnchor || !rightAnchor) {
+    return null;
+  }
+
+  return {
+    handCount: 2,
+    leftY: clamp(leftAnchor.y, 0, 1),
+    rightY: clamp(rightAnchor.y, 0, 1),
+  };
+}
+
+function handAnchorFromLandmarks(landmarks) {
+  if (!Array.isArray(landmarks)) {
+    return null;
+  }
+
+  const points = landmarks.filter(
+    (landmark) =>
+      landmark &&
+      Number.isFinite(landmark.x) &&
+      Number.isFinite(landmark.y),
+  );
+  if (!points.length) {
+    return null;
+  }
+
+  return {
+    x: median(points.map((point) => point.x)),
+    y: median(points.map((point) => point.y)),
+  };
+}
+
+function auditHumanMotionTexture(samples) {
+  const vectors = [];
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    const dt = current.atMs - previous.atMs;
+    if (dt <= 0 || dt > ANTI_CHEAT.motionTexture.maxVectorGapMs) {
+      continue;
+    }
+
+    const leftDelta = current.leftY - previous.leftY;
+    const rightDelta = current.rightY - previous.rightY;
+    const distance = Math.hypot(leftDelta, rightDelta);
+    if (distance < ANTI_CHEAT.motionTexture.minVectorDistance) {
+      continue;
+    }
+
+    vectors.push({
+      leftDelta,
+      rightDelta,
+      distance,
+      speed: distance / dt,
+      leftVelocity: leftDelta / dt,
+      rightVelocity: rightDelta / dt,
+    });
+  }
+
+  if (vectors.length < ANTI_CHEAT.motionTexture.minActiveVectors) {
+    return null;
+  }
+
+  const uniqueVectors = new Set(
+    vectors.map(
+      (vector) =>
+        `${vector.leftVelocity.toFixed(5)}:${vector.rightVelocity.toFixed(5)}:${vector.speed.toFixed(5)}`,
+    ),
+  ).size;
+  const uniqueVectorRatio = uniqueVectors / vectors.length;
+  if (uniqueVectorRatio < ANTI_CHEAT.motionTexture.minUniqueVectorRatio) {
+    return cameraTraceBlocked("motion", "hand movement steps repeat too exactly for live camera input.");
+  }
+
+  let compared = 0;
+  let collinearStable = 0;
+  for (let index = 1; index < vectors.length; index += 1) {
+    const previous = vectors[index - 1];
+    const current = vectors[index];
+    const denominator = previous.distance * current.distance;
+    const meanSpeed = (previous.speed + current.speed) / 2;
+    if (denominator <= 0 || meanSpeed <= 0) {
+      continue;
+    }
+
+    const crossMagnitude = Math.abs(
+      previous.leftDelta * current.rightDelta - previous.rightDelta * current.leftDelta,
+    );
+    const collinearity = crossMagnitude / denominator;
+    const speedChange = Math.abs(current.speed - previous.speed) / meanSpeed;
+    compared += 1;
+    if (
+      collinearity <= ANTI_CHEAT.motionTexture.collinearSine &&
+      speedChange <= ANTI_CHEAT.motionTexture.maxSpeedChangeRatio
+    ) {
+      collinearStable += 1;
+    }
+  }
+
+  if (
+    compared >= ANTI_CHEAT.motionTexture.minActiveVectors / 2 &&
+    collinearStable / compared >= ANTI_CHEAT.motionTexture.maxCollinearStableRatio
+  ) {
+    return cameraTraceBlocked(
+      "motion",
+      "hand movement follows too many straight constant-speed segments.",
+    );
+  }
+
+  return null;
+}
+
+function gestureLeadupSignature(samples, now, windowMs, bins, minSamples) {
+  const windowStart = now - windowMs;
+  const windowSamples = samples
+    .filter((sample) => sample.t >= windowStart && sample.t <= now)
+    .sort((left, right) => left.t - right.t);
+  if (windowSamples.length < minSamples || bins < 2) {
+    return null;
+  }
+
+  const values = [];
+  for (let index = 0; index < bins; index += 1) {
+    const targetTime = windowStart + (windowMs * index) / (bins - 1);
+    const delta = interpolatedDeltaAt(windowSamples, targetTime);
+    if (!Number.isFinite(delta)) {
+      return null;
+    }
+    values.push(delta);
+  }
+
+  return { t: now, values };
+}
+
+function interpolatedDeltaAt(samples, targetTime) {
+  if (samples.length === 0) {
+    return null;
+  }
+
+  if (targetTime <= samples[0].t) {
+    return samples[0].delta;
+  }
+
+  const lastSample = samples.at(-1);
+  if (targetTime >= lastSample.t) {
+    return lastSample.delta;
+  }
+
+  for (let index = 0; index < samples.length - 1; index += 1) {
+    const left = samples[index];
+    const right = samples[index + 1];
+    if (left.t <= targetTime && right.t >= targetTime) {
+      const span = right.t - left.t || 1;
+      const amount = (targetTime - left.t) / span;
+      return left.delta + (right.delta - left.delta) * amount;
+    }
+  }
+
+  return null;
+}
+
+function gestureSignatureDistance(left, right) {
+  const length = Math.min(left.length, right.length);
+  if (length === 0) {
+    return Infinity;
+  }
+
+  let sum = 0;
+  for (let index = 0; index < length; index += 1) {
+    sum += (left[index] - right[index]) ** 2;
+  }
+  return Math.sqrt(sum / length);
 }
 
 function deltaVelocityFeatures(samples) {

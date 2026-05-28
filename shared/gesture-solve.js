@@ -260,8 +260,6 @@ export function replayScoreFromGestureEvents(events) {
     advanceTo(event.atMs);
     if (event.message?.type === "hands") {
       interpreter.process(event.message, event.atMs);
-    } else if (event.message?.type === "flap") {
-      applyFlap(state);
     }
   }
 

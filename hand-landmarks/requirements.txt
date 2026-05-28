@@ -1,0 +1,3 @@
+mediapipe==0.10.18
+Pillow==10.4.0
+numpy==1.26.4

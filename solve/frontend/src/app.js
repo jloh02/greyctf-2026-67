@@ -29,6 +29,7 @@ import {
   listSolveModesByTier,
   localSimOptionsForMode,
 } from "/shared/solve-suite.js";
+import { buildVideoSolvePlan } from "/shared/video-solve.js";
 
 const TRACE_STORAGE_KEY = "solve-lab:last-trace";
 const MAX_RENDER_DT_SECONDS = 0.05;
@@ -91,6 +92,18 @@ const socketStateText = document.querySelector("#socketState");
 const scriptStateText = document.querySelector("#scriptState");
 const traceStateText = document.querySelector("#traceState");
 const traceSummaryText = document.querySelector("#traceSummary");
+const importVideoButton = document.querySelector("#importVideoButton");
+const videoSolverInput = document.querySelector("#videoSolverInput");
+const cropStartInput = document.querySelector("#cropStartInput");
+const cropEndInput = document.querySelector("#cropEndInput");
+const markCropStartButton = document.querySelector("#markCropStartButton");
+const markCropEndButton = document.querySelector("#markCropEndButton");
+const extractVideoClipButton = document.querySelector("#extractVideoClipButton");
+const buildVideoSolverButton = document.querySelector("#buildVideoSolverButton");
+const runVideoSolverButton = document.querySelector("#runVideoSolverButton");
+const solverPreview = document.querySelector("#solverPreview");
+const solverPreviewCtx = solverPreview?.getContext("2d");
+const videoSolverState = document.querySelector("#videoSolverState");
 
 const atlas = new Image();
 let atlasCanvas = null;
@@ -104,6 +117,12 @@ let config = {
   clientSim: true,
   winScore: WIN_SCORE,
   verifyScoreThreshold: 50,
+  videoVerify: {
+    mode: "required",
+    minFrames: 80,
+    minValidFrames: 70,
+    minAverageFps: 4,
+  },
 };
 
 let state = createGameState();
@@ -132,6 +151,11 @@ let handLandmarker = null;
 let lastVideoTime = -1;
 let sentFlaps = 0;
 let sentHandSamples = 0;
+let sentVideoFrames = 0;
+let lastVideoFrameSentAt = -Infinity;
+let latestHandSample = { leftY: null, rightY: null, handCount: 0 };
+let snapshotChallengeCount = 0;
+let snapshotAcceptedCount = 0;
 let mode = "Connecting";
 let pingTimer = null;
 let syncState = {
@@ -143,6 +167,18 @@ let localSimOptions = null;
 let trace = loadTrace();
 let currentRecording = createEmptyTrace();
 let guidedCapture = createGuidedCaptureState();
+let videoSolverSource = createVideoSolverSourceState();
+let videoSolveBuild = null;
+let latestVideoSolverFrame = null;
+const videoSolveRenderCanvas = document.createElement("canvas");
+const videoSolveRenderCtx = videoSolveRenderCanvas.getContext("2d");
+
+const VIDEO_FRAME_INTERVAL_MS = 80;
+const VIDEO_FRAME_WIDTH = 360;
+const VIDEO_FRAME_QUALITY = 0.58;
+const VIDEO_SOLVER_SAMPLE_FPS = 30;
+const VIDEO_SOLVER_PREVIEW_WIDTH = 360;
+const VIDEO_SOLVER_PREVIEW_QUALITY = 0.6;
 
 const queryBackend = new URLSearchParams(window.location.search).get("backend");
 
@@ -219,6 +255,14 @@ function connectGameSocket() {
     }
     if (message.type === "verified") {
       applyVerifiedResult(message);
+      return;
+    }
+    if (message.type === "snapshot_challenge") {
+      handleSnapshotChallenge(message);
+      return;
+    }
+    if (message.type === "snapshot_result") {
+      handleSnapshotResult(message);
       return;
     }
     if (message.type === "pong") {
@@ -435,7 +479,7 @@ function updateGuidedCapture(sample) {
 
   if (guidedCapture.phase === "holding") {
     const remaining = Math.max(0, guidedCapture.holdUntil - now);
-    statusText.textContent = `Hold steady ${(remaining / 1000).toFixed(1)}s.`;
+    statusText.textContent = `Keep small natural hand motion ${(remaining / 1000).toFixed(1)}s.`;
     if (remaining <= 0) {
       finalizeGuidedCapture();
     }
@@ -603,6 +647,18 @@ function createEmptyTrace() {
   };
 }
 
+function createVideoSolverSourceState() {
+  return {
+    fileName: "",
+    objectUrl: "",
+    durationMs: 0,
+    cropStartMs: 0,
+    cropEndMs: 0,
+    trace: null,
+    preparedFrames: [],
+  };
+}
+
 function restoreTraceState() {
   if (trace && !isRecordingWorthSaving(trace)) {
     trace = null;
@@ -681,7 +737,11 @@ function resetLocalRun() {
 function restartRun({ clearRecording = true } = {}) {
   sentFlaps = 0;
   sentHandSamples = 0;
-  flapPulseText.textContent = "0 samples";
+  sentVideoFrames = 0;
+  lastVideoFrameSentAt = -Infinity;
+  snapshotChallengeCount = 0;
+  snapshotAcceptedCount = 0;
+  flapPulseText.textContent = "0 samples / 0 frames / 0 flaps";
   resetLocalRun();
 
   if (clearRecording && !scriptController) {
@@ -707,7 +767,7 @@ function sendFlap(source = "gesture", { record = true } = {}) {
   }
 
   sentFlaps += 1;
-  flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
+  updateInputCounters();
   mode = config.space67Keyboard ? "Keyboard" : mediaPipeReady ? "Tracking" : "Online";
 }
 
@@ -1251,6 +1311,14 @@ async function createHandLandmarker() {
   throw lastError ?? new Error("Could not initialize hand landmarker.");
 }
 
+async function ensureHandLandmarker() {
+  if (handLandmarker) {
+    return handLandmarker;
+  }
+  handLandmarker = await createHandLandmarker();
+  return handLandmarker;
+}
+
 async function startCamera() {
   stopScript();
   resetGuidedCapture({ clearRecording: true });
@@ -1297,7 +1365,7 @@ async function startCamera() {
     }
 
     statusText.textContent = "Loading hand model…";
-    handLandmarker = await createHandLandmarker();
+    handLandmarker = await ensureHandLandmarker();
 
     mediaPipeReady = true;
     cameraStarting = false;
@@ -1352,6 +1420,7 @@ function trackHands() {
         localGesture.process(hands, now);
       }
       sendHandSample(sample, { record: true });
+      maybeSendVideoFrame(sample, now);
       updateHandMeters(sample);
       drawHandOverlay(hands);
       if (!captureStatusHandled) {
@@ -1387,6 +1456,12 @@ function handSample(hands) {
 }
 
 function sendHandSample(sample, { record = true, traceAtMs } = {}) {
+  latestHandSample = {
+    leftY: sample.leftY,
+    rightY: sample.rightY,
+    handCount: sample.handCount,
+  };
+
   const sent = sendTrackedMessage(handsMessage(sample), { record, traceAtMs });
 
   if (!sent) {
@@ -1394,7 +1469,106 @@ function sendHandSample(sample, { record = true, traceAtMs } = {}) {
   }
 
   sentHandSamples += 1;
-  flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
+  updateInputCounters();
+}
+
+function maybeSendVideoFrame(sample, now = performance.now()) {
+  if (config.videoVerify?.mode === "off") {
+    return;
+  }
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  if (now - lastVideoFrameSentAt < VIDEO_FRAME_INTERVAL_MS) {
+    return;
+  }
+  if (!mediaPipeReady || sample.handCount < 2) {
+    return;
+  }
+
+  lastVideoFrameSentAt = now;
+  const payload = {
+    type: "video_frame",
+    sequence: sentVideoFrames + 1,
+    ...sample,
+    clientTime: Date.now(),
+    traceAtMs: recordingTraceAtMs(),
+  };
+
+  try {
+    payload.image = captureCameraSnapshot(VIDEO_FRAME_WIDTH, VIDEO_FRAME_QUALITY);
+  } catch (error) {
+    payload.image = "";
+    payload.error = error.message;
+  }
+
+  socket.send(JSON.stringify(payload));
+  sentVideoFrames += 1;
+  updateInputCounters();
+}
+
+function updateInputCounters() {
+  flapPulseText.textContent = `${sentHandSamples} samples / ${sentVideoFrames} frames / ${sentFlaps} flaps`;
+}
+
+function handleSnapshotChallenge(message) {
+  snapshotChallengeCount += 1;
+  statusText.textContent = `Snapshot challenge ${snapshotChallengeCount}: keep both hands visible.`;
+  sendSnapshotResponse(message);
+}
+
+function handleSnapshotResult(message) {
+  if (message.accepted) {
+    snapshotAcceptedCount += 1;
+    statusText.textContent = `Snapshot accepted (${snapshotAcceptedCount}/${snapshotChallengeCount}).`;
+    return;
+  }
+
+  statusText.textContent = message.message || "Snapshot challenge failed.";
+}
+
+function sendSnapshotResponse(challenge) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  const payload = {
+    type: "snapshot",
+    challengeId: challenge.challengeId,
+    ...latestHandSample,
+    clientTime: Date.now(),
+    traceAtMs: recordingTraceAtMs(),
+  };
+
+  try {
+    payload.image = captureCameraSnapshot();
+  } catch (error) {
+    payload.image = "";
+    payload.error = error.message;
+  }
+
+  socket.send(JSON.stringify(payload));
+}
+
+function captureCameraSnapshot(targetMaxWidth = 480, quality = 0.68) {
+  if (!mediaPipeReady || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    throw new Error("camera frame unavailable");
+  }
+
+  const sourceWidth = video.videoWidth || 0;
+  const sourceHeight = video.videoHeight || 0;
+  if (sourceWidth < 1 || sourceHeight < 1) {
+    throw new Error("camera frame has no dimensions");
+  }
+
+  const targetWidth = Math.min(targetMaxWidth, sourceWidth);
+  const targetHeight = Math.max(1, Math.round((sourceHeight / sourceWidth) * targetWidth));
+  const snapshotCanvas = document.createElement("canvas");
+  snapshotCanvas.width = targetWidth;
+  snapshotCanvas.height = targetHeight;
+  const snapshotCtx = snapshotCanvas.getContext("2d");
+  snapshotCtx.drawImage(video, 0, 0, targetWidth, targetHeight);
+  return snapshotCanvas.toDataURL("image/jpeg", quality);
 }
 
 function updateHandMeters(sample) {

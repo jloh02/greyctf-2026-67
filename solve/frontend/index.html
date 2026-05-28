@@ -102,7 +102,7 @@
         <section class="panel">
           <div class="panel-title">Trace recorder</div>
           <p class="trace-text">
-            Two-hand capture records a 3-2-1 leadup, one 67-triggered flap, and a steady tail
+            Two-hand capture records a 3-2-1 leadup, one 67-triggered flap, and a natural moving tail
             for replay generation.
           </p>
           <div class="button-row">
@@ -113,6 +113,35 @@
           <div class="trace-metrics">
             <span id="traceSummary">No trace loaded.</span>
           </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">Video solver</div>
+          <div class="solver-preview-frame">
+            <canvas id="solverPreview" width="360" height="203"></canvas>
+          </div>
+          <div class="button-row">
+            <button id="importVideoButton" type="button">Import video</button>
+            <button id="extractVideoClipButton" type="button">Extract clip</button>
+            <button id="buildVideoSolverButton" type="button">Build preview</button>
+            <button id="runVideoSolverButton" type="button">Submit preview</button>
+            <input id="videoSolverInput" type="file" accept="video/*" hidden />
+          </div>
+          <div class="crop-grid">
+            <label class="field">
+              <span>Start s</span>
+              <input id="cropStartInput" type="number" min="0" step="0.05" value="0" />
+            </label>
+            <label class="field">
+              <span>End s</span>
+              <input id="cropEndInput" type="number" min="0" step="0.05" value="0" />
+            </label>
+          </div>
+          <div class="button-row compact-row">
+            <button id="markCropStartButton" type="button">Use current as start</button>
+            <button id="markCropEndButton" type="button">Use current as end</button>
+          </div>
+          <p id="videoSolverState" class="trace-text">No source video loaded.</p>
         </section>
 
       </aside>

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
- * Build a gesture trace that clears WIN_SCORE in backend replay.
+ * Build a legacy gesture trace used by the solve lab/regression harness.
  *
- * The mechanical planner is used only to choose pipe-safe flap times. The trace
- * sent to the server uses one stable -> 67 -> stable clip as evidence around
- * explicit gesture-source flaps.
+ * The mechanical planner chooses pipe-safe flap times, but production verification
+ * now derives flaps from continuous hand samples and rejects explicit gesture flaps.
  */
 import { WIN_SCORE } from "../shared/game-core.js";
 import { buildSolveTrace } from "../shared/flap-solver.js";

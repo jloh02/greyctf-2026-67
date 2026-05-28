@@ -15,9 +15,12 @@
     "simulate:trace": "node scripts/simulate-hands.mjs trace scripts/fixtures/solve-pack.json",
     "solve:record-loop": "node scripts/record-loop.mjs -o scripts/fixtures/loop.json",
     "solve:build-pack": "node scripts/build-solve-pack.mjs --tile scripts/fixtures/loop.json -o scripts/fixtures/solve-pack.json",
+    "solve:build-video": "node scripts/build-video-solve.mjs scripts/fixtures/loop.json -o scripts/fixtures/video-solve-pack.json",
     "solve:transform": "node scripts/transform-trace.mjs",
     "solve:suite": "node scripts/run-solve-suite.mjs",
     "solve:suite:verify": "node scripts/run-solve-suite.mjs --verify",
-    "check": "node --check backend/server.js && node --check shared/altitude-hold.js && node --check shared/frontend-client.js && node --check shared/gesture-solve.js && node --check shared/solve-suite.js && node --check scripts/run-solve-suite.mjs && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js && node --check shared/flap-solver.js && node --check shared/gesture-loop.js && node --check solve/server.js && node --check solve/frontend/src/app.js && node --check solve/frontend/src/gesture.js && node --check scripts/simulate-hands.mjs && node --check scripts/transform-trace.mjs && node --check scripts/record-loop.mjs && node --check scripts/build-solve-pack.mjs && node --check scripts/lib/trace-utils.mjs && node --check scripts/lib/hand-samples.mjs && node --check scripts/lib/gesture-solve.mjs"
+    "test:snapshot": "node scripts/test-snapshot-challenges.mjs",
+    "test:video": "node scripts/test-video-stream.mjs",
+    "check": "node --check backend/server.js && node --check shared/altitude-hold.js && node --check shared/frontend-client.js && node --check shared/gesture-solve.js && node --check shared/video-solve.js && node --check shared/solve-suite.js && node --check scripts/run-solve-suite.mjs && node --check scripts/test-snapshot-challenges.mjs && node --check scripts/test-video-stream.mjs && node --check frontend/src/app.js && node --check frontend/src/diagnostics.js && node --check frontend/src/gesture.js && node --check frontend/dev-server.js && node --check shared/flap-solver.js && node --check shared/gesture-loop.js && node --check solve/server.js && node --check solve/frontend/src/app.js && node --check solve/frontend/src/gesture.js && node --check scripts/simulate-hands.mjs && node --check scripts/transform-trace.mjs && node --check scripts/record-loop.mjs && node --check scripts/build-solve-pack.mjs && node --check scripts/build-video-solve.mjs && node --check scripts/lib/trace-utils.mjs && node --check scripts/lib/hand-samples.mjs && node --check scripts/lib/gesture-solve.mjs"
   }
 }

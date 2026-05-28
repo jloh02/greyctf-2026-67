@@ -1,18 +1,18 @@
 # System Design: "67 Gesture" Maze Game (Server-Authoritative Edge AI)
 
-> **Current implementation:** See **§5.6** below and [README.md](README.md). Default production mode is **client-sim + replay verify on finish** (scores > 50), not live server physics broadcasts. Sections 1–4 below describe the original design intent and remain useful context.
+> **Current implementation:** See **§5.6** below and [README.md](README.md). Default production mode is **client-sim + replay verify on finish** (scores > 50), continuous camera-frame verification over WebSocket, and server-side MediaPipe landmark extraction. Sections 1–4 below describe the original design intent and remain useful context, but no longer describe the shipped anti-cheat architecture exactly.
 
 ## 1. System Overview
 
 This is a multiplayer-capable, fast-paced dodging game (similar to *Flappy Bird*) controlled by the "67 trend" hand gesture (alternating flat palms moving up and down).
 
-To ensure minimal latency, zero video bandwidth, and high security, the system uses an **edge-compute + server-verify** architecture. The browser processes the video feed locally to extract hand coordinates. Only mathematical results (`hands` samples and control messages) are sent to the backend. The server replays high-scoring runs to verify score and flag eligibility.
+The original target was minimal-latency edge-compute gesture play. The shipped verification path now trades extra bandwidth for stronger anti-cheat: the browser still runs local MediaPipe for responsive controls, but verified high-score runs also stream compressed camera frames to the backend. The backend extracts landmarks server-side, derives the authoritative hand trace, and replays high-scoring runs to verify score and flag eligibility.
 
 ---
 
 ## 2. Client Architecture (Frontend)
 
-The frontend is responsible for rendering the game, capturing the webcam, and running the Edge AI. **Raw video is never sent over the network.**
+The frontend is responsible for rendering the game, capturing the webcam, and running the Edge AI for responsive local controls. In verified camera mode, it also sends compressed camera frames as `video_frame` evidence over the game WebSocket.
 
 ### 2.1 Edge AI Processing
 
@@ -55,7 +55,8 @@ function processHands(landmarks) {
 ### 2.3 Networking (Client)
 
 * Connect to the server via WebSockets (wss://).
-* Instead of sending raw Y-coordinates continuously, the client sends discrete FLAP events. This massively reduces network payload and prevents the need for complex server-side wave analysis.
+* Send `hands` telemetry for UI/corroboration, `video_frame` evidence for server-side landmark extraction, randomized `snapshot` responses, and `finish` claims.
+* Explicit `flap` messages are retained for keyboard/dev paths but are not trusted for high-score camera verification.
 
 ---
 
@@ -141,7 +142,7 @@ Created a vanilla browser prototype for the "67 trend" Flappy Bird-style clone.
   * A manual input path via pointer/space/button so the game remains testable without camera access.
   * A ready state so the simulation does not start falling before the first manual or camera flap.
 
-This prototype keeps raw webcam video local to the browser. It does not yet include the production WebSocket backend described above; the server-authoritative behavior is represented by an in-browser authority object so the clone is runnable from the current static workspace.
+This early prototype kept webcam video local to the browser. The current production verifier now sends compressed camera-frame evidence to the backend; see §5.6 and [README.md](README.md).
 
 ### 5.1 Full Server-Authoritative App Pass
 
@@ -163,7 +164,7 @@ Reworked the prototype into a complete client/server app.
   * Restart requests are sent to the server instead of mutating local game state.
   * The authority audit log is populated from server messages.
 
-The app now matches the intended architecture: raw video never leaves the browser, while physics, scoring, obstacle generation, collisions, and anti-cheat decisions live on the server.
+At this stage the app matched the original raw-video-local architecture. The current production verifier later changed this by adding continuous server-side video landmark extraction for verified runs.
 
 ### 5.2 Package Manager Update
 
@@ -217,11 +218,11 @@ Separated the deployment shape so it matches the architecture described above.
 
 The live game no longer reconciles client prediction against 30 FPS server state. Instead:
 
-* **Client:** Runs `shared/game-core.js` locally at display rate. MediaPipe stays in the browser; camera mode streams `hands` samples, keyboard mode sends explicit `flap` messages. Physics, collisions, and score are immediate on the client.
-* **Server (default `CLIENT_SIM=true`):** Does not tick physics during play. Appends each `restart`, `hands`, and `flap` message to a per-session input log with `atMs` offsets.
-* **Finish:** When the client reports game over with **claimed score > 50**, it sends `{ type: "finish", score }`. The server replays the log through the same physics + `ServerGestureInterpreter` + anti-cheat pipeline used for live authority.
+* **Client:** Runs `shared/game-core.js` locally at display rate. MediaPipe stays in the browser for responsive local controls; camera mode streams `hands` telemetry plus compressed `video_frame` evidence, keyboard mode sends explicit `flap` messages. Physics, collisions, and score are immediate on the client.
+* **Server (default `CLIENT_SIM=true`):** Does not tick physics during play. Appends each `restart`, `hands`, `video_frame`, `snapshot`, and `flap` message to a per-session input log with `atMs` offsets. Video frames are sent to the bundled MediaPipe sidecar for server-side landmark extraction.
+* **Finish:** When the client reports game over with **claimed score > 50**, it sends `{ type: "finish", score }`. The server waits for pending frame landmark extraction, verifies continuous video/snapshot evidence, canonicalizes replay from server-extracted landmarks, then replays through the same physics + `ServerGestureInterpreter` + anti-cheat pipeline.
 * **Flag:** Awarded when replayed score **≥ `WIN_SCORE`** (67 in `shared/game-core.js`) and matches the claim.
-* **Anti-cheat:** Heuristics (cadence, gesture leadup, amplitude/velocity traps) run only while score **> 50** during replay or legacy live mode.
+* **Anti-cheat:** Heuristics (continuous video coverage, snapshot liveness, cadence, gesture leadup, amplitude/velocity traps, static/reused-frame checks, and cut-frame landmark jumps) run only while score **> 50** during replay or legacy live mode. Public failure messages are intentionally generic; detailed rule reasons stay in backend logs.
 * **Legacy mode:** `CLIENT_SIM=false` restores server-authoritative 60 TPS simulation and 30 FPS `state` broadcasts for debugging.
 
 See [README.md](README.md) for environment variables and protocol tables.
