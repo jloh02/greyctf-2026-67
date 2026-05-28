@@ -8,17 +8,17 @@ const HOST = "127.0.0.1";
 async function main() {
   await runCase("missing video stream", {
     sendVideo: false,
-    expectedReason: "Verification failed. Please retry with both hands visible and steady camera framing.",
+    expectedReason: "Not enough camera frames were captured",
   });
   await runCase("static video landmarks", {
     sendVideo: true,
     staticLandmarks: true,
-    expectedReason: "Verification failed. Please retry with both hands visible and steady camera framing.",
+    expectedReason: "Hands didn't move enough in the camera",
   });
   await runCase("client/video mismatch", {
     sendVideo: true,
     mismatchLandmarks: true,
-    expectedReason: "Verification failed. Please retry with both hands visible and steady camera framing.",
+    expectedReason: "Hands didn't move enough in the camera",
   });
   console.log("video stream tests passed");
 }

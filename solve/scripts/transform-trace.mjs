@@ -3,9 +3,9 @@
  * Transform trace JSON: scale timing, tile loops, strip flaps.
  *
  * Usage:
- *   node scripts/transform-trace.mjs input.json -o out.json --scale 0.95
- *   node scripts/transform-trace.mjs input.json --tile loop.json --duration 120000 -o out.json
- *   node scripts/transform-trace.mjs input.json --hands-only -o out.json
+ *   node solve/scripts/transform-trace.mjs input.json -o out.json --scale 0.95
+ *   node solve/scripts/transform-trace.mjs input.json --tile loop.json --duration 120000 -o out.json
+ *   node solve/scripts/transform-trace.mjs input.json --hands-only -o out.json
  */
 import {
   buildTraceDocument,
@@ -26,7 +26,7 @@ function main() {
   const inputPath = positional[0];
   if (!inputPath) {
     throw new Error(
-      "Usage: node scripts/transform-trace.mjs <input.json> [-o out.json] [--scale N] [--tile loop.json --duration MS] [--hands-only]",
+      "Usage: node solve/scripts/transform-trace.mjs <input.json> [-o out.json] [--scale N] [--tile loop.json --duration MS] [--hands-only]",
     );
   }
 

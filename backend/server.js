@@ -34,9 +34,9 @@ const SPACE_67_KEYBOARD = parseBoolean(process.env.SPACE_67_KEYBOARD, false);
 const DISABLE_ANTI_CHEAT = parseBoolean(process.env.DISABLE_ANTI_CHEAT, false);
 const FINAL_FLAG = process.env.FINAL_FLAG || process.env.FLAG || "";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
-const SOLVE_SUITE = parseBoolean(process.env.SOLVE_SUITE, false);
 const FRONTEND_ROOT = resolve(process.cwd(), "frontend");
 const SHARED_ROOT = resolve(process.cwd(), "shared");
+const PUBLIC_SHARED_MODULES = new Set(["game-core.js", "frontend-client.js"]);
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
   [".css", "text/css; charset=utf-8"],
@@ -69,6 +69,204 @@ const FLAG_SCORE_HINT = `psss... hearsay the score you need to hit is ${WIN_SCOR
 const PUBLIC_ANTI_CHEAT_FAILURE =
   "Verification failed. Please retry with both hands visible and steady camera framing.";
 const PUBLIC_SNAPSHOT_FAILURE = "Snapshot challenge failed. Keep both hands visible.";
+
+/** Player-facing hint from an internal verification rule (no thresholds exposed). */
+function verificationPublicMessage(key, detail = "") {
+  const normalized = String(detail).toLowerCase();
+
+  if (key === "snapshot") {
+    if (normalized.includes("missed")) {
+      return "Snapshot challenge missed. Keep both hands visible and respond when prompted.";
+    }
+    if (normalized.includes("deadline")) {
+      return "Snapshot challenge was too slow. Keep both hands in frame and ready.";
+    }
+    if (normalized.includes("reused")) {
+      return "Snapshot image was reused. Use a live camera — don't repeat the same frame.";
+    }
+    if (normalized.includes("two tracked hands") || normalized.includes("two-hand")) {
+      return "Snapshot needed both hands clearly visible in the camera.";
+    }
+    if (normalized.includes("not enough live camera snapshot challenges")) {
+      return "Not enough snapshot challenges completed. Play the full run with the camera active.";
+    }
+    if (
+      normalized.includes("image is missing") ||
+      normalized.includes("format is unsupported") ||
+      normalized.includes("could not be decoded") ||
+      normalized.includes("too small") ||
+      normalized.includes("too large") ||
+      normalized.includes("dimensions are invalid") ||
+      normalized.includes("resolution is too low") ||
+      normalized.includes("lacks enough visual detail")
+    ) {
+      return "Snapshot image was unreadable. Improve lighting and keep both hands in frame.";
+    }
+    return PUBLIC_SNAPSHOT_FAILURE;
+  }
+
+  if (key === "video") {
+    if (normalized.includes("too few frames")) {
+      return "Not enough camera frames were captured. Keep the game tab active with both hands visible.";
+    }
+    if (normalized.includes("too sparse")) {
+      return "Camera feed was too sparse. Avoid minimizing the tab or pausing the camera.";
+    }
+    if (normalized.includes("poor median frame cadence")) {
+      return "Camera feed was choppy. Use steady lighting and keep hands in frame.";
+    }
+    if (normalized.includes("repeated long frame gaps")) {
+      return "Camera feed stalled or paused. Keep the camera running steadily through the run.";
+    }
+    if (normalized.includes("cut or large missing-frame gap")) {
+      return "Camera feed had a long gap. Don't switch tabs or hide your hands mid-run.";
+    }
+    if (normalized.includes("too few valid camera images")) {
+      return "Too many camera frames were unreadable. Improve lighting and hand visibility.";
+    }
+    if (normalized.includes("repeat too often")) {
+      return "Camera feed looked frozen or duplicated. Use a live camera, not a recording.";
+    }
+    if (normalized.includes("did not find enough two-hand frames")) {
+      return "Both hands weren't visible in enough frames. Center both hands in view.";
+    }
+    if (normalized.includes("does not match server-extracted")) {
+      return "Hand tracking didn't match the camera feed. Retry with a live camera view.";
+    }
+    if (normalized.includes("too static")) {
+      return "Hands didn't move enough in the camera for a real 67 run.";
+    }
+    if (normalized.includes("cut-frame jump")) {
+      return "Hand positions jumped unnaturally in the camera. Keep a steady live view.";
+    }
+    if (normalized.includes("still or nearly-still")) {
+      return "Hands looked mostly still in the camera. Perform visible 67 gestures.";
+    }
+    if (normalized.includes("not configured")) {
+      return "Camera verification is unavailable on the server. Contact the challenge operator.";
+    }
+    return PUBLIC_ANTI_CHEAT_FAILURE;
+  }
+
+  if (key === "landmark") {
+    if (normalized.includes("not configured")) {
+      return "Hand landmark verification is unavailable on the server. Contact the challenge operator.";
+    }
+    if (normalized.includes("did not find two hands")) {
+      return "Server could not see both hands in enough snapshots. Keep both hands clearly visible.";
+    }
+    return "Hand landmark check failed. Keep both hands visible with steady lighting.";
+  }
+
+  if (key === "coverage") {
+    if (normalized.includes("too few hand samples")) {
+      return "Hand tracking dropped out too much. Keep both hands in the camera view.";
+    }
+    if (normalized.includes("too sparse")) {
+      return "Hand samples were too sparse. Track steadily through the whole run.";
+    }
+    return PUBLIC_ANTI_CHEAT_FAILURE;
+  }
+
+  if (key === "cadence") {
+    if (normalized.includes("not continuous enough")) {
+      return "Hand tracking was too irregular. Keep steady framing throughout the run.";
+    }
+    if (normalized.includes("long gaps")) {
+      return "Hand tracking had long pauses. Don't hide hands or leave the camera.";
+    }
+    if (normalized.includes("implausibly large")) {
+      return "Hand tracking had an unusually long gap mid-run. Stay in frame continuously.";
+    }
+    return PUBLIC_ANTI_CHEAT_FAILURE;
+  }
+
+  if (key === "variability") {
+    return "Hand positions looked too repetitive. Use natural live hand movement.";
+  }
+
+  if (key === "motion") {
+    if (normalized.includes("straight constant-speed")) {
+      return "Hand movement looked too mechanical. Perform natural 67 gestures.";
+    }
+    return "Hand movement looked unnatural. Perform real 67 gestures with varied motion.";
+  }
+
+  if (key === "timestamps") {
+    return "Hand tracking timestamps were invalid. Retry the run without pausing or tabbing away.";
+  }
+
+  if (key === "wall-clock") {
+    return "Run timing didn't match live play. Complete the run in real time without fast-forwarding.";
+  }
+
+  return PUBLIC_ANTI_CHEAT_FAILURE;
+}
+
+/** Stable code for logs, solve suite, and support (not shown to casual players by default). */
+function verificationFailureCode(key, detail = "") {
+  const normalized = String(detail).toLowerCase();
+  const rules = {
+    video: [
+      ["too-few-frames", "too few frames"],
+      ["sparse", "too sparse"],
+      ["cadence-median", "poor median frame cadence"],
+      ["cadence-gaps", "repeated long frame gaps"],
+      ["cadence-cut", "cut or large missing-frame gap"],
+      ["invalid-images", "too few valid camera images"],
+      ["duplicate-frames", "repeat too often"],
+      ["two-hand-coverage", "did not find enough two-hand frames"],
+      ["client-mismatch", "does not match server-extracted"],
+      ["static-motion", "too static"],
+      ["cut-jump", "cut-frame jump"],
+      ["still-hands", "still or nearly-still"],
+      ["unconfigured", "not configured"],
+    ],
+    snapshot: [
+      ["missed", "missed"],
+      ["deadline", "deadline"],
+      ["reused", "reused"],
+      ["two-hands", "two tracked hands"],
+      ["insufficient-challenges", "not enough live camera snapshot challenges"],
+      ["bad-image", "image is missing"],
+      ["bad-image", "format is unsupported"],
+      ["bad-image", "could not be decoded"],
+      ["bad-image", "too small"],
+      ["bad-image", "resolution is too low"],
+      ["bad-image", "lacks enough visual detail"],
+    ],
+    landmark: [
+      ["unconfigured", "not configured"],
+      ["two-hands", "did not find two hands"],
+    ],
+    coverage: [
+      ["too-few-samples", "too few hand samples"],
+      ["sparse", "too sparse"],
+    ],
+    cadence: [
+      ["irregular", "not continuous enough"],
+      ["gaps", "long gaps"],
+      ["large-gap", "implausibly large"],
+    ],
+    variability: [["repetitive", "repeat too exactly"]],
+    motion: [
+      ["repetitive-vectors", "repeat too exactly"],
+      ["mechanical", "straight constant-speed"],
+    ],
+    timestamps: [["burst", "same replay timestamp"]],
+    "wall-clock": [["fast-replay", "replayed faster"]],
+  };
+
+  const keyRules = rules[key];
+  if (keyRules) {
+    for (const [slug, needle] of keyRules) {
+      if (normalized.includes(needle)) {
+        return `${key}:${slug}`;
+      }
+    }
+  }
+  return `${key}:unknown`;
+}
 const SNAPSHOT_CHALLENGES = {
   enabled: parseBoolean(process.env.SNAPSHOT_CHALLENGES, true),
   minRequired: Number(process.env.SNAPSHOT_MIN_REQUIRED || "10"),
@@ -223,7 +421,6 @@ const server = createServer(async (request, response) => {
         space67Keyboard: SPACE_67_KEYBOARD,
         antiCheatEnabled: !DISABLE_ANTI_CHEAT,
         diagnosticPage: DIAGNOSTIC_PAGE,
-        solveSuite: SOLVE_SUITE,
         clientSim: CLIENT_SIM,
         winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
@@ -291,6 +488,10 @@ function resolveStaticPath(pathname) {
     if (!sharedAbsolutePath.startsWith(SHARED_ROOT)) {
       return null;
     }
+    const sharedBasename = sharedRelativePath.split(/[/\\]/).pop();
+    if (!PUBLIC_SHARED_MODULES.has(sharedBasename)) {
+      return null;
+    }
     return sharedAbsolutePath;
   }
 
@@ -351,7 +552,6 @@ server.listen(PORT, HOST, () => {
   console.log(`WIN_SCORE=${WIN_SCORE}`);
   console.log(`VERIFY_SCORE_THRESHOLD=${VERIFY_SCORE_THRESHOLD}`);
   console.log(`DIAGNOSTIC_PAGE=${DIAGNOSTIC_PAGE}${DIAGNOSTIC_PAGE ? " (/diagnostics enabled)" : ""}`);
-  console.log(`SOLVE_SUITE=${SOLVE_SUITE}${SOLVE_SUITE ? " (?solve=1 enabled)" : ""}`);
 });
 
 setInterval(() => {
@@ -397,7 +597,6 @@ class GameSocket {
       config: {
         space67Keyboard: SPACE_67_KEYBOARD,
         antiCheatEnabled: !DISABLE_ANTI_CHEAT,
-        solveSuite: SOLVE_SUITE,
         clientSim: CLIENT_SIM,
         winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
@@ -773,7 +972,7 @@ class GameSocket {
         `Verification blocked: ${result.detail || result.message || "anti-cheat failure"}`,
         "warn",
       );
-      this.close(1008, PUBLIC_ANTI_CHEAT_FAILURE);
+      this.close(1008, result.message || PUBLIC_ANTI_CHEAT_FAILURE);
       return;
     }
 
@@ -786,6 +985,8 @@ class GameSocket {
       won: result.won,
       flag: result.flag,
       message: result.message,
+      detail: result.detail || "",
+      failureCode: result.failureCode || "",
       hint: FLAG_SCORE_HINT,
       antiCheat: result.antiCheat,
     });
@@ -1319,14 +1520,19 @@ class GameSession {
     };
   }
 
-  static failedAntiCheatSnapshot({ key = "", message = "", blocked = false } = {}) {
+  static failedAntiCheatSnapshot({
+    key = "",
+    message = "",
+    blocked = false,
+    failureCode = "",
+  } = {}) {
     return {
       enabled: !DISABLE_ANTI_CHEAT,
       score: blocked ? ANTI_CHEAT.blockScore : 0,
       blockScore: ANTI_CHEAT.blockScore,
       level: blocked ? "blocked" : "warning",
-      message: blocked ? PUBLIC_ANTI_CHEAT_FAILURE : message,
-      lastHeuristic: blocked ? "anti-cheat" : key,
+      message: blocked ? message || PUBLIC_ANTI_CHEAT_FAILURE : message,
+      lastHeuristic: blocked ? failureCode || key || "anti-cheat" : key,
     };
   }
 
@@ -1900,6 +2106,7 @@ class GameSession {
         flag: "",
         message: publicVerdictMessage(videoVerdict),
         detail: detailedVerdictMessage(videoVerdict),
+        failureCode: videoVerdict.failureCode || "",
         antiCheat: GameSession.failedAntiCheatSnapshot(videoVerdict),
       };
     }
@@ -1915,6 +2122,7 @@ class GameSession {
         flag: "",
         message: publicVerdictMessage(snapshotVerdict),
         detail: detailedVerdictMessage(snapshotVerdict),
+        failureCode: snapshotVerdict.failureCode || "",
         antiCheat: GameSession.failedAntiCheatSnapshot(snapshotVerdict),
       };
     }
@@ -1929,6 +2137,7 @@ class GameSession {
         flag: "",
         message: publicVerdictMessage(traceVerdict),
         detail: detailedVerdictMessage(traceVerdict),
+        failureCode: traceVerdict.failureCode || "",
         antiCheat: GameSession.failedAntiCheatSnapshot(traceVerdict),
       };
     }
@@ -2430,17 +2639,18 @@ function maxSameTimestampRun(events) {
   return maxRun;
 }
 
-function cameraTraceBlocked(key, message) {
+function cameraTraceBlocked(key, detail) {
   return {
     blocked: true,
     key,
-    message: PUBLIC_ANTI_CHEAT_FAILURE,
-    detail: `Disconnected: ${message}`,
+    message: verificationPublicMessage(key, detail),
+    detail: `Disconnected: ${detail}`,
+    failureCode: verificationFailureCode(key, detail),
   };
 }
 
 function publicVerdictMessage(verdict) {
-  return verdict?.blocked ? PUBLIC_ANTI_CHEAT_FAILURE : verdict?.message || "";
+  return verdict?.message || "";
 }
 
 function detailedVerdictMessage(verdict) {

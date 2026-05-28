@@ -19,12 +19,12 @@ import {
   handsMessage,
   toSocketPayload,
 } from "/shared/frontend-client.js";
-import { buildGestureLoopEvents, mockHandsFromSample } from "/shared/gesture-loop.js";
-import { simulateGestureFlaps } from "/shared/gesture-solve.js";
+import { buildGestureLoopEvents, mockHandsFromSample } from "/solve-lib/gesture-loop.js";
+import { simulateGestureFlaps } from "/solve-lib/gesture-solve.js";
 import {
   analyzeSourceGestureClip,
   buildVideoSolvePlan,
-} from "/shared/video-solve.js";
+} from "/solve-lib/video-solve.js";
 
 const TRACE_STORAGE_KEY = "solve-lab:last-trace";
 const MAX_RENDER_DT_SECONDS = 0.05;
@@ -904,9 +904,18 @@ function formatVerifiedSummary(message) {
   if (message.message) {
     lines.push(`message: ${message.message}`);
   }
+  if (message.failureCode) {
+    lines.push(`failure: ${message.failureCode}`);
+  }
+  if (message.detail) {
+    lines.push(`detail: ${message.detail}`);
+  }
   const antiCheat = message.antiCheat;
   if (antiCheat?.message) {
     lines.push(`anti-cheat: ${antiCheat.level} — ${antiCheat.message}`);
+  }
+  if (antiCheat?.lastHeuristic && antiCheat.lastHeuristic !== antiCheat.message) {
+    lines.push(`rule: ${antiCheat.lastHeuristic}`);
   }
   return lines.join("\n");
 }

@@ -3,10 +3,10 @@
  * Build a hand-only video solve plan from a cropped stable -> 67 -> stable trace.
  *
  * Usage:
- *   node scripts/build-video-solve.mjs path/to/video-clip.json -o video-solve-pack.json
+ *   node solve/scripts/build-video-solve.mjs path/to/video-clip.json -o video-solve-pack.json
  */
-import { WIN_SCORE } from "../shared/game-core.js";
-import { buildVideoSolvePlan } from "../shared/video-solve.js";
+import { WIN_SCORE } from "../../shared/game-core.js";
+import { buildVideoSolvePlan } from "../lib/video-solve.js";
 import {
   loadTrace,
   parseArgs,
@@ -18,7 +18,7 @@ function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2));
   const input = positional[0] || flags.tile;
   if (!input) {
-    throw new Error("Usage: node scripts/build-video-solve.mjs <cropped-trace.json> [-o video-solve-pack.json]");
+    throw new Error("Usage: node solve/scripts/build-video-solve.mjs <cropped-trace.json> [-o video-solve-pack.json]");
   }
   const output = flags.output || "video-solve-pack.json";
   const targetScore = Number(process.env.SOLVE_TARGET_SCORE || WIN_SCORE);

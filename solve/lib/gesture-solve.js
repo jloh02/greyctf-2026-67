@@ -3,13 +3,13 @@ import {
   applyFlap,
   createGameState,
   stepGameState,
-} from "./game-core.js";
+} from "../../shared/game-core.js";
 import {
   SAMPLE_INTERVAL_MS,
   TICK_SECONDS,
   simulateWinningRun,
 } from "./flap-solver.js";
-import { normalizeTraceEvents } from "./frontend-client.js";
+import { normalizeTraceEvents } from "../../shared/frontend-client.js";
 
 const GESTURE_CONFIG = {
   crossThreshold: 0.08,

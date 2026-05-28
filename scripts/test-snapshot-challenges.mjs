@@ -15,16 +15,16 @@ async function main() {
   try {
     await runCase("missing snapshot response", port, {
       respondToChallenges: false,
-      expectedReason: "Verification failed. Please retry with both hands visible and steady camera framing.",
+      expectedReason: "Snapshot challenge missed",
     });
     await runCase("invalid snapshot image", port, {
       respondToChallenges: true,
-      expectedReason: "Verification failed. Please retry with both hands visible and steady camera framing.",
+      expectedReason: "Snapshot image was unreadable",
     });
     await runCase("landmark mismatch", port, {
       respondToChallenges: true,
       snapshotImage: (index) => fakeJpegDataUrl(index),
-      expectedReason: "Verification failed. Please retry with both hands visible and steady camera framing.",
+      expectedReason: "Hand tracking dropped out too much",
     });
     console.log("snapshot challenge tests passed");
   } finally {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PUBLIC_ROOT = resolve(__dirname);
 const SHARED_ROOT = resolve(__dirname, "..", "shared");
+const PUBLIC_SHARED_MODULES = new Set(["game-core.js", "frontend-client.js"]);
 const PORT = Number(process.env.FRONTEND_PORT || process.env.PORT || "4173");
 const HOST = process.env.FRONTEND_HOST || process.env.HOST || "127.0.0.1";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
@@ -55,6 +56,11 @@ async function serveStatic(pathname, response) {
     const sharedAbsolutePath = resolve(join(SHARED_ROOT, normalizedSharedPath));
     if (!sharedAbsolutePath.startsWith(SHARED_ROOT)) {
       response.writeHead(403).end("Forbidden");
+      return;
+    }
+    const sharedBasename = normalizedSharedPath.split(/[/\\]/).pop();
+    if (!PUBLIC_SHARED_MODULES.has(sharedBasename)) {
+      response.writeHead(404).end("Not found");
       return;
     }
     try {

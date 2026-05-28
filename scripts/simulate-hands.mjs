@@ -16,7 +16,7 @@ import {
   parseArgs,
   scaleTraceEvents,
   summarizeTrace,
-} from "./lib/trace-utils.mjs";
+} from "../solve/scripts/lib/trace-utils.mjs";
 
 const argv = process.argv.slice(2);
 const mode = argv[0] || "sussy";

@@ -10,7 +10,7 @@ import {
   createGameState,
   stepGameState,
   GAME_CONSTANTS,
-} from "./game-core.js";
+} from "../../shared/game-core.js";
 import {
   SAMPLE_INTERVAL_MS,
   TICK_SECONDS,
@@ -18,7 +18,7 @@ import {
   replayScoreFromFlapEvents,
   upcomingPipe,
 } from "./flap-solver.js";
-import { flapMessage, handsMessage, normalizeTraceEvents } from "./frontend-client.js";
+import { flapMessage, handsMessage, normalizeTraceEvents } from "../../shared/frontend-client.js";
 
 export const DEFAULT_ALTITUDE_HOLD = {
   /** Desired hover height (px). */

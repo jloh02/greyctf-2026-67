@@ -3,7 +3,7 @@
 import {
   GESTURE_LOOP_DURATION_MS,
   buildGestureLoopEvents,
-} from "../shared/gesture-loop.js";
+} from "../lib/gesture-loop.js";
 
 const CONFIG = {
   crossThreshold: 0.08,

@@ -8,7 +8,7 @@ import {
   applyFlap,
   createGameState,
   stepGameState,
-} from "./game-core.js";
+} from "../../shared/game-core.js";
 
 export const SAMPLE_INTERVAL_MS = 1000 / 60;
 export const TICK_SECONDS = 1 / 60;

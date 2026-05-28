@@ -6,9 +6,11 @@ import { extname, join, normalize, resolve } from "node:path";
 
 const ROOT = process.cwd();
 const SOLVE_FRONTEND_ROOT = resolve(ROOT, "solve/frontend");
+const SOLVE_LIB_ROOT = resolve(ROOT, "solve/lib");
 const SOLVE_MEDIA_ROOT = resolve(ROOT, "solve");
 const SHARED_ASSET_ROOT = resolve(ROOT, "frontend/public/assets");
 const SHARED_ROOT = resolve(ROOT, "shared");
+const PUBLIC_SHARED_MODULES = new Set(["game-core.js", "frontend-client.js"]);
 const PORT = Number(process.env.SOLVE_PORT || process.env.PORT || "4180");
 const HOST = process.env.SOLVE_HOST || process.env.HOST || "127.0.0.1";
 const DEFAULT_TARGET_WS_URL = normalizeTargetUrl(
@@ -67,7 +69,21 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname.startsWith("/solve-lib/")) {
+    await serveStaticFrom(SOLVE_LIB_ROOT, url.pathname.replace("/solve-lib", ""), response, request);
+    return;
+  }
+
   if (url.pathname.startsWith("/shared/")) {
+    const sharedRelativePath = normalize(decodeURIComponent(url.pathname.slice("/shared/".length))).replace(
+      /^(\.\.(\/|\\|$))+/,
+      "",
+    );
+    const sharedBasename = sharedRelativePath.split(/[/\\]/).pop();
+    if (!PUBLIC_SHARED_MODULES.has(sharedBasename)) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not found");
+      return;
+    }
     await serveStaticFrom(SHARED_ROOT, url.pathname.replace("/shared", ""), response, request);
     return;
   }

@@ -4,4 +4,4 @@ export {
   prepareGestureClip,
   replayScoreFromGestureEvents,
   simulateGestureFlaps,
-} from "../../shared/gesture-solve.js";
+} from "../../lib/gesture-solve.js";

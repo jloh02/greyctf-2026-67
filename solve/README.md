@@ -1,6 +1,11 @@
 # Solve Lab
 
-Local tooling for the supported video-backed solver. The solver takes one recording
+Local tooling for the supported video-backed solver. Solver libraries live in
+`solve/lib/`; CLI helpers live in `solve/scripts/`. The solve lab serves those
+modules at `/solve-lib/*` and only exposes `game-core.js` and `frontend-client.js`
+from `/shared/*`.
+
+The solver takes one recording
 of a human **stable -> 67 -> stable** gesture, lets you crop it, builds a 67-point
 hand replay by alternating that clip forward/backward, renders the exact preview
 frames that will be submitted, then replays the run to the backend.

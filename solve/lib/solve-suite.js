@@ -5,8 +5,8 @@
  * regression probes while hardening verification. The supported solver is now the
  * video-backed forward/back replay built from one cropped stable -> 67 -> stable clip.
  */
-import { WIN_SCORE } from "./game-core.js";
-import { normalizeTraceEvents } from "./frontend-client.js";
+import { WIN_SCORE } from "../../shared/game-core.js";
+import { normalizeTraceEvents } from "../../shared/frontend-client.js";
 import { buildVideoSolvePlan } from "./video-solve.js";
 
 export const SOLVE_TIERS = [

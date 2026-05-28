@@ -3,9 +3,9 @@
  * Write a stable -> 67 -> stable gesture loop for solve-pack generation.
  *
  * Usage:
- *   node scripts/record-loop.mjs [-o loop.json]
+ *   node solve/scripts/record-loop.mjs [-o loop.json]
  */
-import { buildGestureLoopEvents } from "../shared/gesture-loop.js";
+import { buildGestureLoopEvents } from "../lib/gesture-loop.js";
 import { buildTraceDocument, parseArgs, summarizeTrace, writeTrace } from "./lib/trace-utils.mjs";
 
 function main() {

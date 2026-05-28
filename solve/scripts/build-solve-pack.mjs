@@ -5,9 +5,9 @@
  * Do not commit or serve the output in production. Production verification derives
  * flaps from continuous hand samples and rejects explicit gesture flaps.
  */
-import { WIN_SCORE } from "../shared/game-core.js";
-import { buildSolveTrace } from "../shared/flap-solver.js";
-import { buildGestureLoopEvents } from "../shared/gesture-loop.js";
+import { WIN_SCORE } from "../../shared/game-core.js";
+import { buildSolveTrace } from "../lib/flap-solver.js";
+import { buildGestureLoopEvents } from "../lib/gesture-loop.js";
 import { buildGestureSolvePack } from "./lib/gesture-solve.mjs";
 import {
   buildTraceDocument,

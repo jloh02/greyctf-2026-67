@@ -14,19 +14,12 @@ import {
   stepGameState,
 } from "/shared/game-core.js";
 import {
-  createTraceReplayer,
   finishMessage,
   flapMessage,
   handsMessage,
   restartMessage,
   toSocketPayload,
 } from "/shared/frontend-client.js";
-import {
-  buildSuiteTrace,
-  listSolveModesByTier,
-  localSimOptionsForMode,
-} from "/shared/solve-suite.js";
-import { mockHandsFromSample } from "/shared/gesture-loop.js";
 
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d");
@@ -49,12 +42,6 @@ const gestureStateText = document.querySelector("#gestureState");
 const flapPulseText = document.querySelector("#flapPulse");
 const leftMeter = document.querySelector("#leftMeter");
 const rightMeter = document.querySelector("#rightMeter");
-const solveSuitePanel = document.querySelector("#solveSuitePanel");
-const solveSuiteSelect = document.querySelector("#solveSuiteSelect");
-const solveSuiteDescription = document.querySelector("#solveSuiteDescription");
-const solveSuiteResult = document.querySelector("#solveSuiteResult");
-const runSolveSuiteButton = document.querySelector("#runSolveSuiteButton");
-const stopSolveSuiteButton = document.querySelector("#stopSolveSuiteButton");
 
 const HAND_ANCHOR_MARKER_RADIUS = 12;
 const HAND_SIDE_GUIDE_TOP = 10;
@@ -99,7 +86,6 @@ let config = {
     minValidFrames: 70,
     minAverageFps: 4,
   },
-  solveSuite: false,
 };
 
 let gameState = createGameState();
@@ -126,14 +112,9 @@ let mode = "Connecting";
 let synthetic67LeftHigh = false;
 let pingTimer = null;
 let runTraceAtMs = null;
-let scriptController = null;
-let localSimOptions = null;
-let importedTrace = null;
 let latestHandSample = { leftY: null, rightY: null, handCount: 0 };
 let snapshotChallengeCount = 0;
 let snapshotAcceptedCount = 0;
-const solveSuiteQueryRequested = new URLSearchParams(window.location.search).has("solve");
-let solveSuitePanelInitialized = false;
 let syncState = {
   rttMs: 0,
   clockOffsetMs: 0,
@@ -178,7 +159,6 @@ function connect() {
       sessionMeta.best = message.session?.best ?? sessionMeta.best;
       resetLocalRun();
       applyInputMode();
-      initSolveSuitePanel();
       if (!cameraStarting) {
         if (config.space67Keyboard) {
           statusText.textContent = "Server connected. Keyboard mode active.";
@@ -373,7 +353,6 @@ function resetLocalRun() {
 }
 
 function restartRun() {
-  stopSolveScript();
   sentFlaps = 0;
   sentHandSamples = 0;
   sentVideoFrames = 0;
@@ -470,42 +449,8 @@ function updateCheatAlertFromState(antiCheat) {
   showCheatAlert(antiCheat.level, `${antiCheat.message}${scoreHint}`);
 }
 
-function appendSolveSuiteResult(text, { replace = false } = {}) {
-  if (!solveSuiteResult) {
-    return;
-  }
-  if (replace) {
-    solveSuiteResult.textContent = text;
-    return;
-  }
-  const previous = solveSuiteResult.textContent.trim();
-  solveSuiteResult.textContent = previous ? `${previous}\n${text}` : text;
-}
-
-function formatVerifiedSummary(message) {
-  const lines = [
-    "--- Verification ---",
-    `valid: ${message.valid}`,
-    `verified: ${message.verified ?? "n/a"}`,
-    `replay score: ${message.score}`,
-    `claimed: ${message.claimedScore ?? "n/a"}`,
-    `won: ${message.won ?? false}`,
-  ];
-  if (message.flag) {
-    lines.push(`flag: ${message.flag}`);
-  }
-  if (message.message) {
-    lines.push(`message: ${message.message}`);
-  }
-  if (message.antiCheat?.message) {
-    lines.push(`anti-cheat: ${message.antiCheat.level} — ${message.antiCheat.message}`);
-  }
-  return lines.join("\n");
-}
-
 function applyVerifiedResult(message) {
   verificationPending = false;
-  appendSolveSuiteResult(formatVerifiedSummary(message));
 
   if (!message.valid) {
     sessionMeta.won = false;
@@ -563,7 +508,7 @@ function applyServerState(serverState) {
 
 function advanceLocalSimulation(dt) {
   if (!gameState.awaitingStart && !gameState.gameOver) {
-    stepGameState(gameState, dt, constants, localSimOptions || undefined);
+    stepGameState(gameState, dt, constants);
   }
 }
 
@@ -616,16 +561,13 @@ function checkRunFinished() {
 
 function submitRunForVerification(score) {
   if (!connected || socket.readyState !== WebSocket.OPEN) {
-    const offline = "Cannot verify — game socket offline.";
-    statusText.textContent = offline;
-    appendSolveSuiteResult(offline);
+    statusText.textContent = "Cannot verify — game socket offline.";
     return;
   }
 
   finishSubmitted = true;
   verificationPending = true;
   statusText.textContent = "Verifying run with server...";
-  appendSolveSuiteResult(`Submitting finish (claim ${score})…`);
   socket.send(JSON.stringify(toSocketPayload(finishMessage(score))));
 }
 
@@ -1235,180 +1177,6 @@ function landmarkToPreviewPoint(landmark, overlaySize) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
-}
-
-function stopSolveScript() {
-  if (!scriptController) {
-    return;
-  }
-  scriptController.stop();
-  scriptController = null;
-  localSimOptions = null;
-}
-
-function populateSolveSuiteSelect() {
-  if (!solveSuiteSelect) {
-    return;
-  }
-
-  solveSuiteSelect.replaceChildren();
-  for (const group of listSolveModesByTier()) {
-    const optgroup = document.createElement("optgroup");
-    optgroup.label = `Tier ${group.tier}: ${group.title}`;
-    for (const entry of group.modes) {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = entry.label;
-      optgroup.appendChild(option);
-    }
-    solveSuiteSelect.appendChild(optgroup);
-  }
-  solveSuiteSelect.value = listSolveModesByTier()[0]?.modes[0]?.id || "";
-  updateSolveSuiteDescription();
-}
-
-function updateSolveSuiteDescription() {
-  if (!solveSuiteSelect || !solveSuiteDescription) {
-    return;
-  }
-  const tier = listSolveModesByTier().find((group) =>
-    group.modes.some((mode) => mode.id === solveSuiteSelect.value),
-  );
-  solveSuiteDescription.textContent = tier?.description || "";
-}
-
-function replayTraceEventOnFrontend(event) {
-  const { message } = event;
-  const traceAtMs = event.atMs;
-
-  if (message.type === "hands") {
-    const sample = {
-      leftY: message.leftY,
-      rightY: message.rightY,
-      handCount: message.handCount,
-    };
-    updateHandMeters(sample);
-    localGesture.process(mockHandsFromSample(sample), performance.now());
-    sendHandSample(sample, traceAtMs);
-    return;
-  }
-
-  if (message.type === "flap") {
-    sendFlap(message.source || "manual", traceAtMs);
-  }
-}
-
-function playTraceOnFrontend(events, { name, claimScore, simOptions = null, onDone } = {}) {
-  stopSolveScript();
-  stopCameraTracking();
-  localSimOptions = simOptions;
-  restartRun();
-
-  scriptController = createTraceReplayer(events, {
-    onHands: replayTraceEventOnFrontend,
-    onFlap: replayTraceEventOnFrontend,
-    onComplete: () => {
-      scriptController = null;
-      localSimOptions = null;
-      const resolvedClaim = Number(claimScore ?? gameState.score);
-      appendSolveSuiteResult(
-        `Replay done. Local score ${gameState.score}. Claim ${resolvedClaim}.`,
-      );
-      if (finishSubmitted) {
-        statusText.textContent = `${name} finished (local ${gameState.score}, claim ${resolvedClaim}).`;
-      } else if (scoreNeedsVerification(resolvedClaim)) {
-        submitRunForVerification(resolvedClaim);
-        statusText.textContent = `${name} finished (local ${gameState.score}, claim ${resolvedClaim}). Verifying…`;
-      } else {
-        grantLocalWinIfTrusted(resolvedClaim);
-        statusText.textContent = `${name} finished (local ${gameState.score}, claim ${resolvedClaim}).`;
-        appendSolveSuiteResult("Skipped verify (claim ≤ threshold).");
-      }
-      onDone?.({ score: gameState.score, claimScore: resolvedClaim });
-    },
-  });
-  mode = "Solve";
-}
-
-async function runFrontendSolveMode(modeId) {
-  if (!connected) {
-    statusText.textContent = "Connect to the game server first.";
-    return;
-  }
-
-  try {
-    const trace = importedTrace;
-    const built = buildSuiteTrace(modeId, {
-      targetScore: targetWinScore(),
-      overshoot: 1,
-      trace,
-    });
-
-    const durationSec = ((built.events?.at(-1)?.atMs ?? built.simMs ?? 0) / 1000).toFixed(1);
-    appendSolveSuiteResult(
-      [
-        `Mode: ${built.mode.label}`,
-        `Planned: local=${built.score} replay-flaps=${built.replayScore ?? "n/a"} claim=${built.claimScore}`,
-        `Trace: ${built.events?.length ?? 0} events (~${durationSec}s)`,
-        built.note || "",
-        modeId !== "empty-claim" && modeId !== "no-collision-pipes" && modeId !== "no-collision-pipes-frame"
-          ? "Replaying to server… verification below when done."
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      { replace: true },
-    );
-
-    if (modeId === "empty-claim") {
-      restartRun();
-      statusText.textContent = "Empty claim: finish 67 with no inputs.";
-      window.setTimeout(() => submitRunForVerification(built.claimScore), 400);
-      return;
-    }
-
-    const simOptions = built.stepOptions ?? localSimOptionsForMode(modeId);
-
-    playTraceOnFrontend(built.events, {
-      name: built.mode.label,
-      claimScore: built.claimScore,
-      simOptions,
-    });
-  } catch (error) {
-    statusText.textContent = error.message;
-    if (solveSuiteResult) {
-      solveSuiteResult.textContent = error.message;
-    }
-  }
-}
-
-function solveSuiteEnabled() {
-  return Boolean(config.solveSuite && solveSuiteQueryRequested);
-}
-
-function initSolveSuitePanel() {
-  if (!solveSuitePanel) {
-    return;
-  }
-
-  if (!solveSuiteEnabled()) {
-    solveSuitePanel.hidden = true;
-    return;
-  }
-
-  if (solveSuitePanelInitialized) {
-    solveSuitePanel.hidden = false;
-    return;
-  }
-
-  solveSuitePanelInitialized = true;
-  solveSuitePanel.hidden = false;
-  populateSolveSuiteSelect();
-  runSolveSuiteButton?.addEventListener("click", () => {
-    runFrontendSolveMode(solveSuiteSelect.value);
-  });
-  stopSolveSuiteButton?.addEventListener("click", stopSolveScript);
-  solveSuiteSelect?.addEventListener("change", updateSolveSuiteDescription);
 }
 
 cameraButton.addEventListener("click", startCamera);

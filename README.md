@@ -82,7 +82,6 @@ Set `CLIENT_SIM=false` on the backend to restore the older server-authoritative 
 | `DISABLE_ANTI_CHEAT`             | `false`                                           | Skip heuristics (dev only)                                                             |
 | `SPACE_67_KEYBOARD`              | `false`                                           | Space bar emits synthetic gesture flaps                                                |
 | `DIAGNOSTIC_PAGE`                | `false`                                           | Serve `/diagnostics` from the backend                                                  |
-| `SOLVE_SUITE`                    | `false`                                           | Enable the `?solve=1` solve suite panel on the main game UI                            |
 
 **Hand landmark service contract**
 
@@ -117,16 +116,14 @@ downloads the MediaPipe hand landmarker model into the sidecar image.
 
 **Failure feedback**
 
-High-score anti-cheat failures are intentionally low-detail on the client. The
-public close reason and verification message are:
+High-score verification failures return a **category-specific player hint** (for
+example, choppy camera feed, missed snapshot, or sparse hand tracking) instead of
+one generic message. Exact thresholds and internal rule strings stay in backend
+logs; the `verified` payload may also include `failureCode` and `detail` for
+solve tooling and operators.
 
-```text
-Verification failed. Please retry with both hands visible and steady camera framing.
-```
-
-The backend logs the detailed rule internally before closing the socket. This
-keeps player guidance useful without exposing a rule-by-rule tuning oracle to
-bot authors.
+Players still do not receive numeric tuning parameters — only actionable guidance
+for the failure category that fired.
 
 # Diagnostics
 
@@ -155,7 +152,7 @@ pnpm start:backend
 
 Open `http://127.0.0.1:8787` (set `DIAGNOSTIC_PAGE=true` in the start script for `/diagnostics`).
 
-For the tiered solve suite on the main game UI during local dev, start the backend with `SOLVE_SUITE=true` and add `?solve=1` (e.g. `http://127.0.0.1:8787?solve=1`). Production defaults keep this disabled. For full solver tooling, use the solve lab at `http://127.0.0.1:4180`.
+For solver tooling, use the solve lab at `http://127.0.0.1:4180` (`pnpm start:solve`). Solver libraries and scripts live under `solve/`.
 
 **Split frontend dev server:**
 

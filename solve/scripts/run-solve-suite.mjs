@@ -2,15 +2,15 @@
 /**
  * Build the supported video-backed solver trace locally.
  *
- *   node scripts/run-solve-suite.mjs
- *   node scripts/run-solve-suite.mjs --trace path/to/cropped-trace.json
+ *   node solve/scripts/run-solve-suite.mjs
+ *   node solve/scripts/run-solve-suite.mjs --trace path/to/cropped-trace.json
  */
-import { WIN_SCORE } from "../shared/game-core.js";
+import { WIN_SCORE } from "../../shared/game-core.js";
 import {
   SOLVE_MODES,
   buildSuiteTrace,
   listSolveModesByTier,
-} from "../shared/solve-suite.js";
+} from "../lib/solve-suite.js";
 import { loadTrace } from "./lib/trace-utils.mjs";
 
 const argv = process.argv.slice(2);
@@ -153,6 +153,8 @@ async function runMode(modeId, trace) {
       row.serverScore = verified?.score ?? null;
       row.flag = verified?.flag || "";
       row.message = verified?.message || "";
+      row.detail = verified?.detail || "";
+      row.failureCode = verified?.failureCode || "";
     } catch (error) {
       row.verifyError = error.message;
     }
@@ -226,6 +228,12 @@ async function main() {
     }
     if (row.message) {
       console.log(`  server: ${row.message}`);
+    }
+    if (row.failureCode) {
+      console.log(`  failure: ${row.failureCode}`);
+    }
+    if (row.detail) {
+      console.log(`  detail: ${row.detail}`);
     }
     if (row.flag) {
       console.log(`  flag: ${row.flag}`);

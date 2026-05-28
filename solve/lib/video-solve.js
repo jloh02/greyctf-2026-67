@@ -1,9 +1,9 @@
-import { WIN_SCORE } from "./game-core.js";
+import { WIN_SCORE } from "../../shared/game-core.js";
 import {
   SAMPLE_INTERVAL_MS,
   simulateWinningRun,
 } from "./flap-solver.js";
-import { normalizeTraceEvents } from "./frontend-client.js";
+import { normalizeTraceEvents } from "../../shared/frontend-client.js";
 import {
   simulateGestureFlaps,
   replayScoreFromGestureEvents,

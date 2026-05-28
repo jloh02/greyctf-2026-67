@@ -1,6 +1,6 @@
 /**
  * Canonical WebSocket payloads for the production game frontend.
- * Solve suite, solve lab, CLI replay, and camera play must all use these shapes.
+ * Solve lab, CLI replay, and camera play must all use these shapes.
  */
 import { WIN_SCORE } from "./game-core.js";
 
