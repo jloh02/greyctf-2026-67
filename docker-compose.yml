@@ -57,6 +57,8 @@ services:
     environment:
       SERVER_NAME: "${SERVER_NAME:-challs.nusgreyhats.org}"
       CERTBOT_DOMAIN: "${CERTBOT_DOMAIN:-${SERVER_NAME:-localhost}}"
+      SSL_CERTIFICATE: "${SSL_CERTIFICATE:-}"
+      SSL_CERTIFICATE_KEY: "${SSL_CERTIFICATE_KEY:-}"
       DOLLAR: "$"
     ports:
       - "${APP_PORT:-36767}:8080"

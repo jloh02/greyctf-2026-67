@@ -743,7 +743,7 @@ function restartRun({ clearRecording = true } = {}) {
   lastVideoFrameSentAt = -Infinity;
   snapshotChallengeCount = 0;
   snapshotAcceptedCount = 0;
-  flapPulseText.textContent = "0 samples / 0 frames / 0 flaps";
+  flapPulseText.textContent = "0 samples";
   resetLocalRun();
 
   if (clearRecording && !scriptController) {
@@ -1421,7 +1421,7 @@ function maybeSendVideoFrame(sample, now = performance.now()) {
 }
 
 function updateInputCounters() {
-  flapPulseText.textContent = `${sentHandSamples} samples / ${sentVideoFrames} frames / ${sentFlaps} flaps`;
+  flapPulseText.textContent = `${sentHandSamples} samples`;
 }
 
 function handleSnapshotChallenge(message) {
@@ -1447,10 +1447,10 @@ function sendSnapshotResponse(challenge) {
   const activeFrame = scriptController?.latestVideoFrame || null;
   const activeSample = activeFrame
     ? {
-        leftY: activeFrame.leftY,
-        rightY: activeFrame.rightY,
-        handCount: activeFrame.handCount ?? 2,
-      }
+      leftY: activeFrame.leftY,
+      rightY: activeFrame.rightY,
+      handCount: activeFrame.handCount ?? 2,
+    }
     : latestHandSample;
 
   const payload = {
@@ -2194,19 +2194,19 @@ async function extractVideoClip() {
 function reportClipAnalysis(analysis, { replace = false } = {}) {
   const candidateLines = analysis.candidates.length
     ? analysis.candidates
-        .slice(0, 8)
-        .map((candidate) => {
-          const marker = analysis.bestCandidate === candidate ? "*" : "-";
-          const verdict = candidate.reversible
-            ? "reversible"
-            : `blocked: ${candidate.error || "not clean"}`;
-          return (
-            `${marker} ${(candidate.startMs / 1000).toFixed(2)}-${(candidate.endMs / 1000).toFixed(2)}s ` +
-            `action ${(candidate.actionAtMs / 1000).toFixed(2)}s trigger ${(candidate.triggerAtMs / 1000).toFixed(2)}s ` +
-            `lag ${Math.round(candidate.triggerLagMs)}ms ` +
-            `fwd/rev ${candidate.forwardFlapCount}/${candidate.reverseFlapCount} ${verdict}`
-          );
-        })
+      .slice(0, 8)
+      .map((candidate) => {
+        const marker = analysis.bestCandidate === candidate ? "*" : "-";
+        const verdict = candidate.reversible
+          ? "reversible"
+          : `blocked: ${candidate.error || "not clean"}`;
+        return (
+          `${marker} ${(candidate.startMs / 1000).toFixed(2)}-${(candidate.endMs / 1000).toFixed(2)}s ` +
+          `action ${(candidate.actionAtMs / 1000).toFixed(2)}s trigger ${(candidate.triggerAtMs / 1000).toFixed(2)}s ` +
+          `lag ${Math.round(candidate.triggerLagMs)}ms ` +
+          `fwd/rev ${candidate.forwardFlapCount}/${candidate.reverseFlapCount} ${verdict}`
+        );
+      })
     : ["- no 67 trigger candidates detected"];
   const lines = [
     "Clip analysis",

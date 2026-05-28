@@ -80,52 +80,106 @@
           <div class="button-row">
             <button id="importVideoButton" type="button">Import video</button>
             <button id="autoCropVideoButton" type="button">Auto crop</button>
-            <button id="extractVideoClipButton" type="button">Extract clip</button>
-            <button id="buildVideoSolverButton" type="button">Build preview</button>
-            <button id="runVideoSolverButton" type="button">Submit preview</button>
+            <button id="extractVideoClipButton" type="button">
+              Extract clip
+            </button>
+            <button id="buildVideoSolverButton" type="button">
+              Build preview
+            </button>
+            <button id="runVideoSolverButton" type="button">
+              Submit preview
+            </button>
             <input id="videoSolverInput" type="file" accept="video/*" hidden />
           </div>
           <div class="crop-grid">
             <label class="field">
               <span>Start s</span>
-              <input id="cropStartInput" type="number" min="0" step="0.05" value="0" />
+              <input
+                id="cropStartInput"
+                type="number"
+                min="0"
+                step="0.05"
+                value="0"
+              />
             </label>
             <label class="field">
               <span>End s</span>
-              <input id="cropEndInput" type="number" min="0" step="0.05" value="0" />
+              <input
+                id="cropEndInput"
+                type="number"
+                min="0"
+                step="0.05"
+                value="0"
+              />
             </label>
           </div>
           <div class="button-row compact-row">
-            <button id="markCropStartButton" type="button">Use current as start</button>
-            <button id="markCropEndButton" type="button">Use current as end</button>
+            <button id="markCropStartButton" type="button">
+              Use current as start
+            </button>
+            <button id="markCropEndButton" type="button">
+              Use current as end
+            </button>
           </div>
           <div class="section-speed-grid">
             <label class="field">
               <span>Lead speed</span>
-              <input id="leadSpeedInput" type="number" min="0.2" max="3" step="0.02" value="1" />
+              <input
+                id="leadSpeedInput"
+                type="number"
+                min="0.2"
+                max="3"
+                step="0.02"
+                value="1"
+              />
             </label>
             <label class="field">
               <span>Gesture speed</span>
-              <input id="gestureSpeedInput" type="number" min="0.2" max="3" step="0.02" value="1" />
+              <input
+                id="gestureSpeedInput"
+                type="number"
+                min="0.2"
+                max="3"
+                step="0.02"
+                value="1"
+              />
             </label>
             <label class="field">
               <span>Recovery speed</span>
-              <input id="recoverySpeedInput" type="number" min="0.2" max="3" step="0.02" value="1" />
+              <input
+                id="recoverySpeedInput"
+                type="number"
+                min="0.2"
+                max="3"
+                step="0.02"
+                value="1"
+              />
             </label>
             <label class="field">
               <span>Settle speed</span>
-              <input id="settleSpeedInput" type="number" min="0.2" max="3" step="0.02" value="1" />
+              <input
+                id="settleSpeedInput"
+                type="number"
+                min="0.2"
+                max="3"
+                step="0.02"
+                value="1"
+              />
             </label>
           </div>
           <div class="gesture-readout solver-readout">
             <span id="gestureState">NEUTRAL</span>
-            <span id="flapPulse">0 samples / 0 frames / 0 flaps</span>
+            <span id="flapPulse">0 samples</span>
           </div>
-          <p id="videoSolverState" class="trace-text">No source video loaded.</p>
+          <p id="videoSolverState" class="trace-text">
+            No source video loaded.
+          </p>
           <div class="trace-metrics">
             <span id="traceSummary">No trace loaded.</span>
           </div>
-          <pre id="solveSuiteResult" class="suite-result">Solver output will appear here.</pre>
+          <pre id="solveSuiteResult" class="suite-result">
+Solver output will appear here.</pre
+          >
         </section>
 
         <div class="hidden-hooks" hidden>
@@ -136,11 +190,14 @@
           <button id="runSolveSuiteButton" type="button">Run selected</button>
           <button id="exportTraceButton" type="button">Export trace</button>
           <button id="importTraceButton" type="button">Import trace</button>
-          <input id="importTraceInput" type="file" accept="application/json,.json" />
+          <input
+            id="importTraceInput"
+            type="file"
+            accept="application/json,.json"
+          />
           <meter id="leftMeter" min="0" max="1" value="0.5"></meter>
           <meter id="rightMeter" min="0" max="1" value="0.5"></meter>
         </div>
-
       </aside>
     </main>
 

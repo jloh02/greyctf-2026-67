@@ -359,7 +359,7 @@ function restartRun() {
   lastVideoFrameSentAt = -Infinity;
   snapshotChallengeCount = 0;
   snapshotAcceptedCount = 0;
-  flapPulseText.textContent = "0 samples / 0 frames / 0 flaps";
+  flapPulseText.textContent = "0 samples";
   sessionMeta.won = false;
   sessionMeta.flag = "";
   resetLocalRun();
@@ -961,7 +961,7 @@ function maybeSendVideoFrame(sample, now = performance.now()) {
 }
 
 function updateInputCounters() {
-  flapPulseText.textContent = `${sentHandSamples} samples / ${sentVideoFrames} frames / ${sentFlaps} flaps`;
+  flapPulseText.textContent = `${sentHandSamples} samples`;
 }
 
 function handleSnapshotChallenge(message) {
