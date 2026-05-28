@@ -235,8 +235,9 @@ function lerp(left, right, t) {
 
 export function replayScoreFromGestureEvents(events) {
   const state = createGameState();
+  const pendingFlaps = [];
   const interpreter = new ReplayGestureInterpreter({
-    onFlap: () => applyFlap(state),
+    onFlap: (flap) => pendingFlaps.push(flap),
   });
   const sorted = [...events].sort((left, right) => left.atMs - right.atMs);
   let simMs = 0;
@@ -257,10 +258,21 @@ export function replayScoreFromGestureEvents(events) {
   };
 
   for (const event of sorted) {
-    advanceTo(event.atMs);
     if (event.message?.type === "hands") {
       interpreter.process(event.message, event.atMs);
+      while (pendingFlaps.length > 0) {
+        const flap = pendingFlaps.shift();
+        advanceTo(flap.triggerAtMs);
+        if (!state.gameOver) {
+          applyFlap(state);
+        }
+      }
     }
+  }
+
+  const finalAtMs = sorted.at(-1)?.atMs;
+  if (Number.isFinite(finalAtMs)) {
+    advanceTo(finalAtMs);
   }
 
   return {

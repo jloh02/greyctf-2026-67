@@ -74,7 +74,7 @@ solver surface because they were diagnostic negatives, not submission candidates
 | `SNAPSHOT_LANDMARK_MODE` | Snapshot landmark extraction mode |
 | `HAND_LANDMARK_SERVICE_URL` | HTTP endpoint that extracts hand landmarks from submitted images |
 | `VIDEO_VERIFY_MODE` | Video verification mode; high-score runs require continuous submitted frames |
-| `SOLVE_OVERSHOOT` | Extra planned score before claiming 67; default video build uses `1` |
+| `SOLVE_OVERSHOOT` | Extra planned score before claiming 67; default video build uses `0` |
 
 ## Trace Format
 

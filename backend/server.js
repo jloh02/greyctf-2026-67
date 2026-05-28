@@ -1959,6 +1959,10 @@ class GameSession {
     replay.reset();
     replay.verifyReplay = true;
     replay.claimedScore = claimedScore;
+    const pendingGestureFlaps = [];
+    replay.gesture.onFlap = (event) => {
+      pendingGestureFlaps.push(event);
+    };
 
     let simMs = 0;
 
@@ -1980,11 +1984,13 @@ class GameSession {
     for (const event of events) {
       if (event.type === "restart") {
         replay.reset();
+        replay.gesture.onFlap = (flapEvent) => {
+          pendingGestureFlaps.push(flapEvent);
+        };
+        pendingGestureFlaps.length = 0;
         simMs = event.atMs;
         continue;
       }
-
-      advanceTo(event.atMs);
 
       if (event.type === "hands") {
         replay.processHandSample(
@@ -1995,6 +2001,14 @@ class GameSession {
           },
           event.atMs,
         );
+        while (pendingGestureFlaps.length > 0) {
+          const flapEvent = pendingGestureFlaps.shift();
+          advanceTo(flapEvent.triggerAtMs);
+          replay.flap("67 gesture", flapEvent.triggerAtMs);
+          if (replay.disconnectReason || replay.gameOver) {
+            break;
+          }
+        }
         if (replay.disconnectReason) {
           break;
         }
@@ -2007,11 +2021,17 @@ class GameSession {
             "Verification failed: explicit flap events are not valid camera input.";
           break;
         }
+        advanceTo(event.atMs);
         replay.flap(event.source === "gesture" ? "67 gesture" : "manual input", event.atMs);
         if (replay.disconnectReason) {
           break;
         }
       }
+    }
+
+    const lastEventAtMs = events.at(-1)?.atMs;
+    if (!replay.gameOver && Number.isFinite(lastEventAtMs)) {
+      advanceTo(lastEventAtMs);
     }
 
     const score = replay.score;

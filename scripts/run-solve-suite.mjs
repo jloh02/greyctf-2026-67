@@ -72,6 +72,7 @@ async function verifyOnBackend(events, claimedScore) {
   socket.send(JSON.stringify({ type: "restart" }));
 
   const sorted = [...events].sort((left, right) => left.atMs - right.atMs);
+  const durationMs = sorted.at(-1)?.atMs || 0;
   await new Promise((resolve) => {
     for (const entry of sorted) {
       setTimeout(() => {
@@ -87,23 +88,16 @@ async function verifyOnBackend(events, claimedScore) {
       }, entry.atMs);
     }
 
-    const durationMs = sorted.at(-1)?.atMs || 0;
     setTimeout(resolve, durationMs + 600);
   });
 
-  await new Promise((resolve) => {
-    const finishAt = (sorted.at(-1)?.atMs || 0) + 700;
-    setTimeout(() => {
-      socket.send(
-        JSON.stringify({
-          type: "finish",
-          score: claimedScore,
-          clientTime: Date.now(),
-        }),
-      );
-      resolve();
-    }, finishAt);
-  });
+  socket.send(
+    JSON.stringify({
+      type: "finish",
+      score: claimedScore,
+      clientTime: Date.now(),
+    }),
+  );
 
   await new Promise((resolve) => {
     const deadline = Date.now() + 6000;
@@ -125,7 +119,7 @@ async function verifyOnBackend(events, claimedScore) {
 async function runMode(modeId, trace) {
   const options = {
     targetScore: claimScore,
-    overshoot: Number(process.env.SOLVE_OVERSHOOT ?? "1"),
+    overshoot: Number(process.env.SOLVE_OVERSHOOT ?? "0"),
     trace,
   };
 
@@ -157,6 +151,7 @@ async function runMode(modeId, trace) {
       row.verified = verified?.verified ?? false;
       row.valid = verified?.valid ?? false;
       row.serverScore = verified?.score ?? null;
+      row.flag = verified?.flag || "";
       row.message = verified?.message || "";
     } catch (error) {
       row.verifyError = error.message;
@@ -202,7 +197,7 @@ async function main() {
       const verifyBit =
         row.valid === undefined
           ? ""
-          : ` verify valid=${row.valid} server=${row.serverScore}`;
+          : ` verify valid=${row.valid} server=${row.serverScore}${row.flag ? ` flag=${row.flag}` : ""}`;
       console.log(
         `local=${row.localScore} replay=${row.replayScore} claim=${row.claim}${verifyBit}`,
       );
@@ -227,6 +222,9 @@ async function main() {
     }
     if (row.message) {
       console.log(`  server: ${row.message}`);
+    }
+    if (row.flag) {
+      console.log(`  flag: ${row.flag}`);
     }
     if (row.verifyError) {
       console.log(`  verify error: ${row.verifyError}`);

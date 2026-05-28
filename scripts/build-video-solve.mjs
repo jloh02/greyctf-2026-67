@@ -19,7 +19,7 @@ function main() {
   const input = positional[0] || flags.tile || "scripts/fixtures/loop.json";
   const output = flags.output || "scripts/fixtures/video-solve-pack.json";
   const targetScore = Number(process.env.SOLVE_TARGET_SCORE || WIN_SCORE);
-  const overshoot = Number(process.env.SOLVE_OVERSHOOT ?? "1");
+  const overshoot = Number(process.env.SOLVE_OVERSHOOT ?? "0");
   const strategy = flags.strategy || process.env.SOLVE_STRATEGY || "lookahead";
   const unitSectionSpeedPattern = parseUnitSpeeds(
     flags.unitSpeeds || process.env.SOLVE_UNIT_SPEEDS || "",

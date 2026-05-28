@@ -1,12 +1,12 @@
 import { WIN_SCORE } from "./game-core.js";
 import {
   SAMPLE_INTERVAL_MS,
-  replayScoreFromTimedEvents,
   simulateWinningRun,
 } from "./flap-solver.js";
 import { normalizeTraceEvents } from "./frontend-client.js";
 import {
   simulateGestureFlaps,
+  replayScoreFromGestureEvents,
 } from "./gesture-solve.js";
 
 const DEFAULT_SPEED_PATTERN = [2.85, 3.05, 3.22, 2.96, 3.14, 2.9, 3.28];
@@ -19,13 +19,13 @@ const DEFAULT_PRE_TRIGGER_HOLD_MS = 620;
 const DEFAULT_POST_TRIGGER_HOLD_MS = 320;
 const DEFAULT_PRE_ACTION_CONTEXT_MS = 260;
 const DEFAULT_START_DELAY_MS = 900;
-const DEFAULT_FINAL_TAIL_MS = 1600;
+const DEFAULT_FINAL_TAIL_MS = 300;
 const DEFAULT_STABLE = { leftY: 0.47, rightY: 0.48, handCount: 2 };
 
 export function buildVideoSolvePlan({
   clipTrace,
   targetScore = WIN_SCORE,
-  overshoot = 1,
+  overshoot = 0,
   maxSimMs = 130000,
   strategy = "lookahead",
   directionPattern = "pingpong",
@@ -81,16 +81,12 @@ export function buildVideoSolvePlan({
     totalDurationMs,
     intervalMs: videoFrameIntervalMs,
   });
-  const derivedFlaps = simulateGestureFlaps(events);
-  const replayScore = replayScoreFromTimedEvents(
-    derivedFlaps.map((flap) => ({
-      atMs: flap.triggerAtMs,
-      message: { type: "flap", source: "gesture" },
-    })),
-  );
+  const fullReplay = replayScoreFromGestureEvents(events);
+  const derivedFlaps = fullReplay.flaps;
+  const replayScore = fullReplay.score;
   const replay = {
     score: replayScore,
-    gameOver: replayScore < targetScore,
+    gameOver: fullReplay.gameOver,
     flaps: derivedFlaps,
   };
 
@@ -298,10 +294,10 @@ function buildGestureWindows({
       direction,
       speed,
       sectionSpeeds,
-      flapAtMs: Math.round(flapAtMs),
-      startAtMs: Math.round(startAtMs),
-      endAtMs: Math.round(endAtMs),
-      triggerAtMs: Math.round(startAtMs + triggerAtMs),
+      flapAtMs: timelineMs(flapAtMs),
+      startAtMs: timelineMs(startAtMs),
+      endAtMs: timelineMs(endAtMs),
+      triggerAtMs: timelineMs(startAtMs + triggerAtMs),
       sourceStartAtMs: clip.sourceStartAtMs,
       sourceEndAtMs: clip.sourceEndAtMs,
       clipDurationMs: clip.durationMs,
@@ -314,9 +310,10 @@ function buildTimelineEvents({ source, windows, totalDurationMs, intervalMs }) {
   const events = [];
   for (let atMs = 0; atMs <= totalDurationMs; atMs += intervalMs) {
     const entry = timelineEntryAt(source, windows, atMs);
+    const sample = addCameraTexture(entry.sample, atMs, entry.window);
     events.push({
-      atMs: Math.round(atMs),
-      message: entry.sample,
+      atMs: timelineMs(atMs),
+      message: sample,
       priority: 1,
     });
   }
@@ -327,24 +324,27 @@ function buildTimelineEvents({ source, windows, totalDurationMs, intervalMs }) {
         continue;
       }
       const entry = timelineEntryAt(source, windows, atMs, window);
+      const sample = addCameraTexture(entry.sample, atMs, window);
       events.push({
-        atMs: Math.round(atMs),
-        message: entry.sample,
+        atMs: timelineMs(atMs),
+        message: sample,
         priority: 2 + unitSamplePriority(window, atMs),
       });
     }
     const triggerEntry = timelineEntryAt(source, windows, window.triggerAtMs, window);
+    const triggerSample = addCameraTexture(triggerEntry.sample, window.triggerAtMs, window);
     events.push({
-      atMs: Math.round(window.triggerAtMs),
-      message: triggerEntry.sample,
+      atMs: timelineMs(window.triggerAtMs),
+      message: triggerSample,
       priority: 10,
     });
   }
 
   const finalEntry = timelineEntryAt(source, windows, totalDurationMs);
+  const finalSample = addCameraTexture(finalEntry.sample, totalDurationMs, finalEntry.window);
   events.push({
-    atMs: Math.round(totalDurationMs),
-    message: finalEntry.sample,
+    atMs: timelineMs(totalDurationMs),
+    message: finalSample,
     priority: 1,
   });
 
@@ -362,19 +362,24 @@ function buildTimelineFrames({ source, windows, totalDurationMs, intervalMs }) {
   let sequence = 1;
   for (let atMs = 0; atMs <= totalDurationMs; atMs += intervalMs) {
     const entry = timelineEntryAt(source, windows, atMs);
+    const sample = addCameraTexture(entry.sample, atMs, entry.window);
     frames.push({
       sequence,
-      atMs: Math.round(atMs),
-      sourceAtMs: Math.round(entry.sourceAtMs),
-      leftY: entry.sample.leftY,
-      rightY: entry.sample.rightY,
-      handCount: entry.sample.handCount ?? 2,
+      atMs: timelineMs(atMs),
+      sourceAtMs: timelineMs(entry.sourceAtMs),
+      leftY: sample.leftY,
+      rightY: sample.rightY,
+      handCount: sample.handCount ?? 2,
       windowIndex: entry.window?.index ?? null,
       direction: entry.window?.direction || "stable",
     });
     sequence += 1;
   }
   return frames;
+}
+
+function timelineMs(value) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function timelineEntryAt(source, windows, atMs, forcedWindow = null) {
@@ -386,6 +391,34 @@ function timelineEntryAt(source, windows, atMs, forcedWindow = null) {
     sourceAtMs,
     sample: sourceSampleAt(source, sourceAtMs),
     window,
+  };
+}
+
+function addCameraTexture(sample, atMs, window = null) {
+  if (!sample || sample.type !== "hands") {
+    return sample;
+  }
+
+  const windowPhase = window ? (window.index + 1) * 0.73 : 0;
+  const common =
+    0.0045 * Math.sin(atMs / 83 + 0.4) +
+    0.0028 * Math.sin(atMs / 211 + 1.7) +
+    0.0018 * Math.sin(atMs / 37 + windowPhase);
+  const differential =
+    0.0015 * Math.sin(atMs / 127 + windowPhase) +
+    0.0009 * Math.sin(atMs / 53 + 2.3);
+  if (window) {
+    return {
+      ...sample,
+      leftY: clamp(sample.leftY + common, 0.12, 0.88),
+      rightY: clamp(sample.rightY + common, 0.12, 0.88),
+    };
+  }
+
+  return {
+    ...sample,
+    leftY: clamp(sample.leftY + common + differential, 0.12, 0.88),
+    rightY: clamp(sample.rightY + common * 0.92 - differential, 0.12, 0.88),
   };
 }
 
