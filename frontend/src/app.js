@@ -99,6 +99,7 @@ let config = {
     minValidFrames: 70,
     minAverageFps: 4,
   },
+  solveSuite: false,
 };
 
 let gameState = createGameState();
@@ -131,7 +132,8 @@ let importedTrace = null;
 let latestHandSample = { leftY: null, rightY: null, handCount: 0 };
 let snapshotChallengeCount = 0;
 let snapshotAcceptedCount = 0;
-const solveSuiteEnabled = new URLSearchParams(window.location.search).has("solve");
+const solveSuiteQueryRequested = new URLSearchParams(window.location.search).has("solve");
+let solveSuitePanelInitialized = false;
 let syncState = {
   rttMs: 0,
   clockOffsetMs: 0,
@@ -176,6 +178,7 @@ function connect() {
       sessionMeta.best = message.session?.best ?? sessionMeta.best;
       resetLocalRun();
       applyInputMode();
+      initSolveSuitePanel();
       if (!cameraStarting) {
         if (config.space67Keyboard) {
           statusText.textContent = "Server connected. Keyboard mode active.";
@@ -1379,11 +1382,26 @@ async function runFrontendSolveMode(modeId) {
   }
 }
 
+function solveSuiteEnabled() {
+  return Boolean(config.solveSuite && solveSuiteQueryRequested);
+}
+
 function initSolveSuitePanel() {
-  if (!solveSuiteEnabled || !solveSuitePanel) {
+  if (!solveSuitePanel) {
     return;
   }
 
+  if (!solveSuiteEnabled()) {
+    solveSuitePanel.hidden = true;
+    return;
+  }
+
+  if (solveSuitePanelInitialized) {
+    solveSuitePanel.hidden = false;
+    return;
+  }
+
+  solveSuitePanelInitialized = true;
   solveSuitePanel.hidden = false;
   populateSolveSuiteSelect();
   runSolveSuiteButton?.addEventListener("click", () => {
@@ -1395,7 +1413,6 @@ function initSolveSuitePanel() {
 
 cameraButton.addEventListener("click", startCamera);
 restartButton.addEventListener("click", restartRun);
-initSolveSuitePanel();
 
 window.addEventListener("pointerdown", (event) => {
   if (event.target.closest(".controls")) {

@@ -82,6 +82,7 @@ Set `CLIENT_SIM=false` on the backend to restore the older server-authoritative 
 | `DISABLE_ANTI_CHEAT`             | `false`                                           | Skip heuristics (dev only)                                                             |
 | `SPACE_67_KEYBOARD`              | `false`                                           | Space bar emits synthetic gesture flaps                                                |
 | `DIAGNOSTIC_PAGE`                | `false`                                           | Serve `/diagnostics` from the backend                                                  |
+| `SOLVE_SUITE`                    | `false`                                           | Enable the `?solve=1` solve suite panel on the main game UI                            |
 
 **Hand landmark service contract**
 
@@ -154,7 +155,7 @@ pnpm start:backend
 
 Open `http://127.0.0.1:8787` (set `DIAGNOSTIC_PAGE=true` in the start script for `/diagnostics`).
 
-For the tiered solve suite on the **production UI**, add `?solve=1` (e.g. `http://127.0.0.1:8787?solve=1`) or use the solve lab at `http://127.0.0.1:4180`. Both use `shared/frontend-client.js` for the same `hands` / `flap` / `finish` wire format. Manual-flap and legacy explicit-gesture traces are negative tests; high-score verification now requires continuous live-paced camera frames whose server-extracted landmarks can drive replay.
+For the tiered solve suite on the main game UI during local dev, start the backend with `SOLVE_SUITE=true` and add `?solve=1` (e.g. `http://127.0.0.1:8787?solve=1`). Production defaults keep this disabled. For full solver tooling, use the solve lab at `http://127.0.0.1:4180`.
 
 **Split frontend dev server:**
 

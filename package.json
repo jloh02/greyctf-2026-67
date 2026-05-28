@@ -5,8 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@10.30.3",
   "scripts": {
-    "start": "DIAGNOSTIC_PAGE=true node backend/server.js",
-    "start:backend": "DIAGNOSTIC_PAGE=true node backend/server.js",
+    "start": "DIAGNOSTIC_PAGE=true SOLVE_SUITE=true node backend/server.js",
+    "start:backend": "DIAGNOSTIC_PAGE=true SOLVE_SUITE=true node backend/server.js",
     "start:frontend": "node frontend/dev-server.js",
     "start:solve": "node solve/server.js",
     "validate:gesture-loop": "node scripts/validate-gesture-loop.mjs",

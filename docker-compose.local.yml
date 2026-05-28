@@ -27,6 +27,7 @@ services:
       PORT: 8787
       NODE_ENV: production
       DIAGNOSTIC_PAGE: "${DIAGNOSTIC_PAGE:-true}"
+      SOLVE_SUITE: "${SOLVE_SUITE:-true}"
       SPACE_67_KEYBOARD: "${SPACE_67_KEYBOARD:-false}"
       DISABLE_ANTI_CHEAT: "${DISABLE_ANTI_CHEAT:-false}"
       CLIENT_SIM: "${CLIENT_SIM:-true}"

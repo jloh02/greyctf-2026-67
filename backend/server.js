@@ -34,6 +34,7 @@ const SPACE_67_KEYBOARD = parseBoolean(process.env.SPACE_67_KEYBOARD, false);
 const DISABLE_ANTI_CHEAT = parseBoolean(process.env.DISABLE_ANTI_CHEAT, false);
 const FINAL_FLAG = process.env.FINAL_FLAG || process.env.FLAG || "";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
+const SOLVE_SUITE = parseBoolean(process.env.SOLVE_SUITE, false);
 const FRONTEND_ROOT = resolve(process.cwd(), "frontend");
 const SHARED_ROOT = resolve(process.cwd(), "shared");
 const MIME_TYPES = new Map([
@@ -222,6 +223,7 @@ const server = createServer(async (request, response) => {
         space67Keyboard: SPACE_67_KEYBOARD,
         antiCheatEnabled: !DISABLE_ANTI_CHEAT,
         diagnosticPage: DIAGNOSTIC_PAGE,
+        solveSuite: SOLVE_SUITE,
         clientSim: CLIENT_SIM,
         winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
@@ -349,6 +351,7 @@ server.listen(PORT, HOST, () => {
   console.log(`WIN_SCORE=${WIN_SCORE}`);
   console.log(`VERIFY_SCORE_THRESHOLD=${VERIFY_SCORE_THRESHOLD}`);
   console.log(`DIAGNOSTIC_PAGE=${DIAGNOSTIC_PAGE}${DIAGNOSTIC_PAGE ? " (/diagnostics enabled)" : ""}`);
+  console.log(`SOLVE_SUITE=${SOLVE_SUITE}${SOLVE_SUITE ? " (?solve=1 enabled)" : ""}`);
 });
 
 setInterval(() => {
@@ -394,6 +397,7 @@ class GameSocket {
       config: {
         space67Keyboard: SPACE_67_KEYBOARD,
         antiCheatEnabled: !DISABLE_ANTI_CHEAT,
+        solveSuite: SOLVE_SUITE,
         clientSim: CLIENT_SIM,
         winScore: WIN_SCORE,
         verifyScoreThreshold: VERIFY_SCORE_THRESHOLD,
