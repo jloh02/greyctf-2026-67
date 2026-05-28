@@ -27,6 +27,11 @@ body {
     linear-gradient(180deg, #efe1bc 0%, #e7d4a7 100%);
 }
 
+.hidden-hooks {
+  display: none !important;
+  visibility: hidden;
+}
+
 button,
 input,
 meter {
@@ -189,7 +194,7 @@ meter {
 }
 
 .suite-result {
-  margin: 0.5rem 0 0;
+  margin: 0.75rem 0 0;
   padding: 0.5rem 0.65rem;
   font-size: 0.72rem;
   line-height: 1.4;
@@ -199,6 +204,21 @@ meter {
   max-height: 8rem;
   overflow: auto;
   color: var(--ink);
+}
+
+.solver-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.solver-media-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.solver-media-grid .mini-label {
+  margin-bottom: 6px;
 }
 
 .button-row {
@@ -250,7 +270,7 @@ button:disabled {
   max-width: 100%;
   min-width: 0;
   aspect-ratio: 16 / 9;
-  max-height: min(32vh, 240px);
+  max-height: min(28vh, 220px);
   margin-inline: auto;
   overflow: hidden;
   border-radius: 16px;
@@ -275,11 +295,16 @@ button:disabled {
   background: #1d2430;
 }
 
-.crop-grid {
+.crop-grid,
+.section-speed-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-top: 12px;
+}
+
+.section-speed-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .compact-row button {
@@ -301,7 +326,6 @@ button:disabled {
 #cameraPreview {
   z-index: 1;
   object-fit: cover;
-  transform: scaleX(-1);
 }
 
 #handOverlay {
@@ -330,6 +354,14 @@ meter {
   gap: 12px;
   margin-top: 12px;
   font-weight: 700;
+}
+
+.solver-readout {
+  margin-top: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  font-size: 0.86rem;
 }
 
 .trace-metrics {
@@ -371,7 +403,12 @@ meter {
     grid-template-columns: 1fr;
   }
 
-  .crop-grid {
+  .solver-media-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .crop-grid,
+  .section-speed-grid {
     grid-template-columns: 1fr;
   }
 }

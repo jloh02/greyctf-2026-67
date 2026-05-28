@@ -15,21 +15,16 @@ import {
 } from "/shared/game-core.js";
 import {
   createTraceReplayer,
-  finishMessage,
   flapMessage,
   handsMessage,
-  restartMessage,
   toSocketPayload,
 } from "/shared/frontend-client.js";
-import { createAltitudeHoldController } from "/shared/altitude-hold.js";
 import { mockHandsFromSample } from "/shared/gesture-loop.js";
+import { simulateGestureFlaps } from "/shared/gesture-solve.js";
 import {
-  SOLVE_MODES,
-  buildSuiteTrace,
-  listSolveModesByTier,
-  localSimOptionsForMode,
-} from "/shared/solve-suite.js";
-import { buildVideoSolvePlan } from "/shared/video-solve.js";
+  analyzeSourceGestureClip,
+  buildVideoSolvePlan,
+} from "/shared/video-solve.js";
 
 const TRACE_STORAGE_KEY = "solve-lab:last-trace";
 const MAX_RENDER_DT_SECONDS = 0.05;
@@ -68,10 +63,7 @@ const connectButton = document.querySelector("#connectButton");
 const restartButton = document.querySelector("#restartButton");
 const cameraButton = document.querySelector("#cameraButton");
 const stopScriptButton = document.querySelector("#stopScriptButton");
-const solveSuiteSelect = document.querySelector("#solveSuiteSelect");
-const solveSuiteDescription = document.querySelector("#solveSuiteDescription");
 const solveSuiteResult = document.querySelector("#solveSuiteResult");
-const runSolveSuiteButton = document.querySelector("#runSolveSuiteButton");
 const exportTraceButton = document.querySelector("#exportTraceButton");
 const importTraceButton = document.querySelector("#importTraceButton");
 const importTraceInput = document.querySelector("#importTraceInput");
@@ -96,6 +88,11 @@ const importVideoButton = document.querySelector("#importVideoButton");
 const videoSolverInput = document.querySelector("#videoSolverInput");
 const cropStartInput = document.querySelector("#cropStartInput");
 const cropEndInput = document.querySelector("#cropEndInput");
+const autoCropVideoButton = document.querySelector("#autoCropVideoButton");
+const leadSpeedInput = document.querySelector("#leadSpeedInput");
+const gestureSpeedInput = document.querySelector("#gestureSpeedInput");
+const recoverySpeedInput = document.querySelector("#recoverySpeedInput");
+const settleSpeedInput = document.querySelector("#settleSpeedInput");
 const markCropStartButton = document.querySelector("#markCropStartButton");
 const markCropEndButton = document.querySelector("#markCropEndButton");
 const extractVideoClipButton = document.querySelector("#extractVideoClipButton");
@@ -179,8 +176,12 @@ const VIDEO_FRAME_QUALITY = 0.58;
 const VIDEO_SOLVER_SAMPLE_FPS = 30;
 const VIDEO_SOLVER_PREVIEW_WIDTH = 360;
 const VIDEO_SOLVER_PREVIEW_QUALITY = 0.6;
+const AUTO_CROP_PRE_ACTION_MS = 900;
+const AUTO_CROP_POST_TRIGGER_MS = 900;
 
-const queryBackend = new URLSearchParams(window.location.search).get("backend");
+const queryParams = new URLSearchParams(window.location.search);
+const queryBackend = queryParams.get("backend");
+const queryVideo = queryParams.get("video");
 
 boot();
 
@@ -192,6 +193,7 @@ async function boot() {
   connectSockets();
   requestAnimationFrame(draw);
   applyInputMode();
+  void bootQueryVideo();
 }
 
 async function loadConfig() {
@@ -677,7 +679,7 @@ function updateTraceSummary(activeTrace, { live = false } = {}) {
     }
 
     traceSummaryText.textContent =
-      "No trace yet. Camera records every hand frame — brief null leftY/rightY dropouts are normal.";
+      "No cropped source trace yet.";
     traceStateText.textContent = "none";
     return;
   }
@@ -819,109 +821,6 @@ function catchUpSimulationTo(targetMs) {
   }
 }
 
-function maybeScriptAltitudeHold() {
-  const hold = scriptController?.altitudeHold;
-  if (!hold || state.gameOver) {
-    return;
-  }
-
-  const now = performance.now();
-  if (!hold.shouldFlap(state, now)) {
-    return;
-  }
-
-  scriptController.holdFlaps = (scriptController.holdFlaps || 0) + 1;
-  const elapsed = Math.round(now - (scriptController.startedAt || now));
-  applyLocalFlap();
-  sendTrackedMessage(flapMessage("manual"), { record: false, traceAtMs: elapsed });
-  sentFlaps += 1;
-  updateHoldHud(hold);
-}
-
-function updateHoldHud(hold) {
-  const targetY = hold.resolveTargetY(state);
-  const bandHigh = targetY + hold.config.flapBelow;
-  const bandLow = targetY - hold.config.tooHigh;
-  gestureStateText.textContent = `HOLD y=${Math.round(state.birdY)} band ${Math.round(bandLow)}–${Math.round(bandHigh)}`;
-}
-
-function maybeCompleteSuiteHold() {
-  if (!scriptController?.claimScore || finishSubmitted || state.gameOver) {
-    return;
-  }
-  if (state.score < targetWinScore()) {
-    return;
-  }
-
-  const claim = scriptController.claimScore;
-  stopScript();
-  finishSubmitted = true;
-  if (scoreNeedsVerification(claim)) {
-    statusText.textContent = `Score ${state.score}. Verifying with server…`;
-    submitRunForVerification(claim);
-  } else {
-    grantLocalWinIfTrusted(state.score);
-    statusText.textContent = `Hold run finished at score ${state.score}.`;
-  }
-}
-
-function startFrameHoldLive({ name, simOptions, claimScore, godMode = false }) {
-  stopCameraTracking();
-  stopScript();
-  restartRun({ clearRecording: false });
-  localSimOptions = simOptions;
-
-  const altitudeHold = createAltitudeHoldController({
-    respectFrameBounds: !godMode,
-    constants,
-  });
-  altitudeHold.reset();
-  applyLocalFlap();
-  sendTrackedMessage(flapMessage("manual"), { record: false, traceAtMs: 0 });
-
-  const controller = {
-    name,
-    claimScore,
-    altitudeHold,
-    startedAt: performance.now(),
-    holdFlaps: 1,
-    timer: null,
-    stop() {
-      this.stopped = true;
-      if (this.timer) {
-        clearTimeout(this.timer);
-      }
-      localSimOptions = null;
-    },
-  };
-  scriptController = controller;
-  scriptStateText.textContent = name;
-  mode = "Hold";
-  statusText.textContent = godMode
-    ? "God-mode hold: pass pipes + frame."
-    : "Frame hold: pass pipes; floor/ceiling kill.";
-
-  const sampleIntervalMs = 1000 / 60;
-  const tick = () => {
-    if (controller.stopped) {
-      return;
-    }
-    const elapsed = performance.now() - controller.startedAt;
-    const sample = {
-      leftY: 0.45 + 0.02 * Math.sin(elapsed / 280),
-      rightY: 0.55 - 0.02 * Math.sin(elapsed / 280),
-      handCount: 2,
-    };
-    sendHandSample(sample, { record: false, traceAtMs: Math.round(elapsed) });
-    updateHandMeters(sample);
-    drawSampleOverlay(sample);
-    flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps (hold ${controller.holdFlaps})`;
-    controller.timer = window.setTimeout(tick, sampleIntervalMs);
-  };
-  controller.timer = window.setTimeout(tick, 0);
-  updateHoldHud(altitudeHold);
-}
-
 function targetWinScore() {
   return constants.winScore ?? config.winScore ?? WIN_SCORE;
 }
@@ -1037,8 +936,6 @@ function draw() {
   const dt = Math.min(MAX_RENDER_DT_SECONDS, Math.max(0, (now - lastDrawAt) / 1000));
   lastDrawAt = now;
   advanceLocalSimulation(dt);
-  maybeScriptAltitudeHold();
-  maybeCompleteSuiteHold();
   checkRunFinished();
 
   ctx.imageSmoothingEnabled = false;
@@ -1275,14 +1172,18 @@ function applyInputMode() {
   }
 
   cameraButton.disabled = false;
-  if (!mediaPipeReady && !cameraStarting) {
-    startCamera();
-  } else if (mediaPipeReady) {
+  if (mediaPipeReady) {
     statusText.textContent = connected
       ? "Camera tracking active through proxy."
       : "Camera active. Proxy offline.";
     mode = "Tracking";
+    return;
   }
+
+  statusText.textContent = connected
+    ? "Proxy connected. Import a source video to build the solver preview."
+    : "Import a source video to build the solver preview.";
+  mode = connected ? "Online" : "Offline";
 }
 
 async function createHandLandmarker() {
@@ -1346,6 +1247,9 @@ async function startCamera() {
     cameraStarting = true;
     cameraButton.disabled = true;
     statusText.textContent = "Requesting camera access…";
+    video.controls = false;
+    video.removeAttribute("src");
+    video.load();
 
     video.srcObject = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -1531,17 +1435,25 @@ function sendSnapshotResponse(challenge) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
+  const activeFrame = scriptController?.latestVideoFrame || null;
+  const activeSample = activeFrame
+    ? {
+        leftY: activeFrame.leftY,
+        rightY: activeFrame.rightY,
+        handCount: activeFrame.handCount ?? 2,
+      }
+    : latestHandSample;
 
   const payload = {
     type: "snapshot",
     challengeId: challenge.challengeId,
-    ...latestHandSample,
+    ...activeSample,
     clientTime: Date.now(),
-    traceAtMs: recordingTraceAtMs(),
+    traceAtMs: activeFrame?.atMs ?? recordingTraceAtMs(),
   };
 
   try {
-    payload.image = captureCameraSnapshot();
+    payload.image = activeFrame?.image || captureCameraSnapshot();
   } catch (error) {
     payload.image = "";
     payload.error = error.message;
@@ -1682,8 +1594,8 @@ function drawHandSideGuide(ctx, overlaySize) {
   ctx.font = "800 13px Avenir Next, Segoe UI, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("L", leftLabelX, bottom + 12);
-  ctx.fillText("R", rightLabelX, bottom + 12);
+  ctx.fillText("B", leftLabelX, bottom + 12);
+  ctx.fillText("A", rightLabelX, bottom + 12);
   ctx.restore();
 }
 
@@ -1729,12 +1641,12 @@ function landmarkToPreviewPoint(landmark, overlaySize) {
   const offsetY = (height - renderedHeight) / 2;
 
   return {
-    x: width - (offsetX + landmark.x * renderedWidth),
+    x: offsetX + landmark.x * renderedWidth,
     y: offsetY + landmark.y * renderedHeight,
   };
 }
 
-function playTraceEvents(events, { name, claimScore, onDone, simOptions = null } = {}) {
+function playTraceEvents(events, { name, claimScore, onDone, simOptions = null, videoFrames = [] } = {}) {
   stopCameraTracking();
   stopScript();
   localSimOptions = simOptions;
@@ -1743,8 +1655,15 @@ function playTraceEvents(events, { name, claimScore, onDone, simOptions = null }
   const controller = {
     name,
     replaySimMs: 0,
+    startedAt: performance.now(),
+    videoFrameTimers: [],
+    latestVideoFrame: null,
     stop() {
       replayer.stop();
+      for (const timer of this.videoFrameTimers) {
+        clearTimeout(timer);
+      }
+      this.videoFrameTimers = [];
       localSimOptions = null;
     },
   };
@@ -1757,6 +1676,10 @@ function playTraceEvents(events, { name, claimScore, onDone, simOptions = null }
     onFlap: (event) => replayTraceEvent(event),
     onMessage: (event) => replayTraceEvent(event),
     onComplete: () => {
+      for (const timer of controller.videoFrameTimers) {
+        clearTimeout(timer);
+      }
+      controller.videoFrameTimers = [];
       scriptController = null;
       scriptStateText.textContent = "none";
       localSimOptions = null;
@@ -1776,142 +1699,66 @@ function playTraceEvents(events, { name, claimScore, onDone, simOptions = null }
       onDone?.({ score: state.score, claimScore: resolvedClaim });
     },
   });
+  if (videoFrames.length > 0) {
+    scheduleVideoSolveFrames(controller, videoFrames);
+  }
   controller.stop = () => {
     replayer.stop();
+    for (const timer of controller.videoFrameTimers) {
+      clearTimeout(timer);
+    }
+    controller.videoFrameTimers = [];
     localSimOptions = null;
     scriptController = null;
     scriptStateText.textContent = "none";
   };
 }
 
-function populateSolveSuiteSelect() {
-  if (!solveSuiteSelect) {
+function scheduleVideoSolveFrames(controller, videoFrames) {
+  for (const frame of videoFrames) {
+    const timer = window.setTimeout(() => {
+      if (controller.stopped || scriptController !== controller) {
+        return;
+      }
+      sendVideoSolveFrame(frame);
+      controller.latestVideoFrame = frame;
+      latestVideoSolverFrame = frame;
+    }, frame.atMs);
+    controller.videoFrameTimers.push(timer);
+  }
+}
+
+function sendVideoSolveFrame(frame) {
+  if (!frame?.image) {
     return;
   }
 
-  solveSuiteSelect.replaceChildren();
-  for (const group of listSolveModesByTier()) {
-    const optgroup = document.createElement("optgroup");
-    optgroup.label = `Tier ${group.tier}: ${group.title}`;
-    for (const entry of group.modes) {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = entry.label;
-      optgroup.appendChild(option);
-    }
-    solveSuiteSelect.appendChild(optgroup);
-  }
+  drawPreparedVideoSolverFrame(frame);
+  const sample = {
+    leftY: frame.leftY,
+    rightY: frame.rightY,
+    handCount: frame.handCount ?? 2,
+  };
+  latestHandSample = sample;
+  updateHandMeters(sample);
+  drawSampleOverlay(sample);
 
-  solveSuiteSelect.value = "recorded-gesture-replay";
-  updateSolveSuiteDescription();
-}
-
-function updateSolveSuiteDescription() {
-  if (!solveSuiteSelect || !solveSuiteDescription) {
+  if (!socket || socket.readyState !== WebSocket.OPEN || config.videoVerify?.mode === "off") {
     return;
   }
 
-  const mode = SOLVE_MODES.find((entry) => entry.id === solveSuiteSelect.value);
-  const tier = listSolveModesByTier().find((group) => group.tier === mode?.tier);
-  solveSuiteDescription.textContent = mode
-    ? `${tier?.description || ""} Expected verify: ${mode.verifyExpected}.`
-    : "";
-}
-
-function reportSuiteResult(built, { footer = "" } = {}) {
-  const durationSec = ((built.events?.at(-1)?.atMs ?? built.simMs ?? 0) / 1000).toFixed(1);
-  const lines = [
-    `Mode: ${built.mode.label}`,
-    `Planned: local=${built.score} replay-flaps=${built.replayScore ?? "n/a"} claim=${built.claimScore}`,
-    `Trace: ${built.events?.length ?? 0} events (~${durationSec}s)`,
-    built.note ? `Note: ${built.note}` : "",
-    footer,
-  ].filter(Boolean);
-
-  appendSolveSuiteResult(lines.join("\n"), { replace: true });
-  console.log("Solve suite", built);
-}
-
-async function runSolveSuiteMode(modeId) {
-  stopCameraTracking();
-  stopScript();
-
-  try {
-    let activeTrace = trace;
-    if (modeId === "recorded-gesture-replay" && !activeTrace?.events?.length) {
-      statusText.textContent = "No trace loaded — fetching solve-pack.json…";
-      activeTrace = await loadSolvePackTrace();
-    }
-
-    const built = buildSuiteTrace(modeId, {
-      targetScore: targetWinScore(),
-      overshoot: 1,
-      trace: activeTrace,
-    });
-
-    const needsReplay =
-      modeId !== "empty-claim" &&
-      modeId !== "no-collision-pipes" &&
-      modeId !== "no-collision-pipes-frame";
-
-    reportSuiteResult(built, {
-      footer: needsReplay
-        ? "Replaying to server… verification prints below when done."
-        : "",
-    });
-
-    if (modeId === "empty-claim") {
-      restartRun({ clearRecording: false });
-      scriptStateText.textContent = built.mode.label;
-      mode = "Suite";
-      statusText.textContent =
-        "Empty claim: submitting finish 67 with no inputs (expect verify fail).";
-      window.setTimeout(() => {
-        sendTrackedMessage(restartMessage(), { record: false });
-        submitRunForVerification(built.claimScore);
-      }, 400);
-      return;
-    }
-
-    const simOptions = built.stepOptions ?? localSimOptionsForMode(modeId);
-
-    if (modeId === "no-collision-pipes" || modeId === "no-collision-pipes-frame") {
-      startFrameHoldLive({
-        name: built.mode.label,
-        simOptions,
-        claimScore: built.claimScore,
-        godMode: modeId === "no-collision-pipes-frame",
-      });
-      return;
-    }
-
-    const replayName = `${built.mode.label}${built.direction ? ` (${built.direction})` : ""}`;
-    statusText.textContent = `${replayName} — ${built.events.length} events. Replaying…`;
-
-    playTraceEvents(built.events, {
-      name: replayName,
-      claimScore: built.claimScore,
-      simOptions,
-      onDone: () => {
-        if (built.localOnly) {
-          statusText.textContent +=
-            " Local god-mode only — server verify should fail.";
-        }
-      },
-    });
-  } catch (error) {
-    statusText.textContent = error.message;
-    if (solveSuiteResult) {
-      solveSuiteResult.textContent = error.message;
-    }
-  }
-}
-
-function startSolveSuiteScript() {
-  if (!solveSuiteSelect) {
-    return;
-  }
-  void runSolveSuiteMode(solveSuiteSelect.value);
+  socket.send(
+    JSON.stringify({
+      type: "video_frame",
+      sequence: sentVideoFrames + 1,
+      image: frame.image,
+      ...sample,
+      clientTime: Date.now(),
+      traceAtMs: frame.atMs,
+    }),
+  );
+  sentVideoFrames += 1;
+  updateInputCounters();
 }
 
 function replayTraceEvent(event) {
@@ -1939,26 +1786,11 @@ function replayTraceEvent(event) {
       traceAtMs,
     });
     sentFlaps += 1;
-    flapPulseText.textContent = `${sentHandSamples} samples / ${sentFlaps} flaps`;
+    updateInputCounters();
     return;
   }
 
   sendTrackedMessage(message, { record: false, traceAtMs });
-}
-
-async function loadSolvePackTrace() {
-  const response = await fetch("/fixtures/solve-pack.json", { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`fixture missing (${response.status}) — run pnpm solve:build-pack`);
-  }
-  const payload = await response.json();
-  if (!isTrace(payload)) {
-    throw new Error("solve-pack.json is not a valid trace.");
-  }
-  trace = snapshotRecording(payload, payload.result || "solve-pack");
-  saveTrace(trace);
-  restoreTraceState();
-  return trace;
 }
 
 function stopScript() {
@@ -1979,7 +1811,7 @@ function exportTrace() {
   const payload = traceForExport();
   if (!payload?.events?.length) {
     statusText.textContent =
-      "Nothing to export yet. Start Camera, show both hands, play a run, then export.";
+      "Nothing to export yet. Import a video and extract a cropped source clip first.";
     return;
   }
 
@@ -2013,6 +1845,533 @@ async function importTrace(file) {
   trace = parsed;
   saveTrace(trace);
   restoreTraceState();
+}
+
+async function importVideoSource(file) {
+  stopScript();
+  stopCameraTracking();
+  if (videoSolverSource.objectUrl) {
+    URL.revokeObjectURL(videoSolverSource.objectUrl);
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  videoSolverSource = createVideoSolverSourceState();
+  videoSolverSource.fileName = file.name;
+  videoSolverSource.objectUrl = objectUrl;
+  videoSolveBuild = null;
+  latestVideoSolverFrame = null;
+
+  video.srcObject = null;
+  video.src = objectUrl;
+  video.controls = true;
+  video.loop = false;
+  video.muted = true;
+  await waitForVideoMetadata(video);
+
+  videoSolverSource.durationMs = Math.round((video.duration || 0) * 1000);
+  videoSolverSource.cropStartMs = 0;
+  videoSolverSource.cropEndMs = videoSolverSource.durationMs;
+  cropStartInput.value = "0.00";
+  cropEndInput.value = (videoSolverSource.durationMs / 1000).toFixed(2);
+  drawSolverPreviewPlaceholder("video loaded");
+  updateVideoSolverState(
+    `Loaded ${file.name}. Auto crop can find the stable -> 67 -> stable motion, or set the range manually.`,
+  );
+}
+
+async function importVideoUrl(sourceUrl, name = sourceUrl.split("/").pop() || "source video") {
+  stopScript();
+  stopCameraTracking();
+  if (videoSolverSource.objectUrl) {
+    URL.revokeObjectURL(videoSolverSource.objectUrl);
+  }
+
+  videoSolverSource = createVideoSolverSourceState();
+  videoSolverSource.fileName = name;
+  videoSolverSource.objectUrl = sourceUrl;
+  videoSolveBuild = null;
+  latestVideoSolverFrame = null;
+
+  video.srcObject = null;
+  video.src = sourceUrl;
+  video.controls = true;
+  video.loop = false;
+  video.muted = true;
+  await waitForVideoMetadata(video);
+
+  videoSolverSource.durationMs = Math.round((video.duration || 0) * 1000);
+  videoSolverSource.cropStartMs = 0;
+  videoSolverSource.cropEndMs = videoSolverSource.durationMs;
+  cropStartInput.value = "0.00";
+  cropEndInput.value = (videoSolverSource.durationMs / 1000).toFixed(2);
+  drawSolverPreviewPlaceholder("video loaded");
+  updateVideoSolverState(
+    `Loaded ${name}. Auto crop can find the stable -> 67 -> stable motion, or set the range manually.`,
+  );
+}
+
+async function bootQueryVideo() {
+  if (!queryVideo) {
+    return;
+  }
+  try {
+    await importVideoUrl(queryVideo, decodeURIComponent(queryVideo.split("/").pop() || "source video"));
+    if (queryParams.get("autoCrop") === "1") {
+      await autoCropVideoClip();
+    }
+    if (queryParams.get("build") === "1") {
+      await buildVideoSolverPreview();
+    }
+    if (queryParams.get("submit") === "1") {
+      await waitForSocketOpen();
+      runVideoSolverPreview();
+    }
+  } catch (error) {
+    updateVideoSolverState(`Query video failed: ${error.message}`);
+  }
+}
+
+function waitForSocketOpen(timeoutMs = 8000) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const tick = () => {
+      if (socket?.readyState === WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+      if (performance.now() - startedAt > timeoutMs) {
+        reject(new Error("game socket did not open"));
+        return;
+      }
+      window.setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
+function waitForVideoMetadata(sourceVideo) {
+  if (Number.isFinite(sourceVideo.duration) && sourceVideo.duration > 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      sourceVideo.removeEventListener("loadedmetadata", onLoaded);
+      sourceVideo.removeEventListener("error", onError);
+    };
+    const onLoaded = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("video metadata failed to load"));
+    };
+    sourceVideo.addEventListener("loadedmetadata", onLoaded, { once: true });
+    sourceVideo.addEventListener("error", onError, { once: true });
+  });
+}
+
+async function seekVideo(seconds) {
+  const target = clamp(seconds, 0, Math.max(0, video.duration || 0));
+  if (
+    Math.abs(video.currentTime - target) < 0.015 &&
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  ) {
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    };
+    const onSeeked = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("video seek failed"));
+    };
+    video.addEventListener("seeked", onSeeked, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    video.currentTime = target;
+  });
+}
+
+function readCropMs() {
+  const durationMs = videoSolverSource.durationMs || Math.round((video.duration || 0) * 1000);
+  const startMs = clamp(Number(cropStartInput.value) * 1000 || 0, 0, durationMs);
+  const endMs = clamp(Number(cropEndInput.value) * 1000 || durationMs, 0, durationMs);
+  if (endMs - startMs < 500) {
+    throw new Error("Crop must be at least 0.5s long.");
+  }
+  return {
+    startMs: Math.min(startMs, endMs - 500),
+    endMs,
+  };
+}
+
+async function scanVideoHandTrace({ startMs, endMs, label = "Scanning" }) {
+  const detector = await ensureHandLandmarker();
+  const events = [];
+  const stepMs = 1000 / VIDEO_SOLVER_SAMPLE_FPS;
+  let sampleIndex = 0;
+  const spanMs = Math.max(1, endMs - startMs);
+
+  for (let atMs = 0; atMs <= spanMs; atMs += stepMs) {
+    const sourceMs = startMs + atMs;
+    await seekVideo(sourceMs / 1000);
+    const result = detector.detectForVideo(video, performance.now() + sampleIndex);
+    const hands = orderedHands(result);
+    const sample = handSample(hands);
+    events.push({
+      atMs: Math.round(atMs),
+      message: handsMessage(sample),
+    });
+    sampleIndex += 1;
+    if (sampleIndex % 8 === 0) {
+      updateVideoSolverState(
+        `${label} ${Math.min(100, Math.round((atMs / spanMs) * 100))}%...`,
+      );
+      await nextAnimationFrame();
+    }
+  }
+
+  return events;
+}
+
+function commitVideoClipTrace({ events, startMs, endMs, status }) {
+  const clipTrace = {
+    ...createEmptyTrace(),
+    completedAt: new Date().toISOString(),
+    result: "video-clip",
+    score: 0,
+    handSamples: events.length,
+    flaps: 0,
+    events,
+  };
+  videoSolverSource.cropStartMs = startMs;
+  videoSolverSource.cropEndMs = endMs;
+  cropStartInput.value = (startMs / 1000).toFixed(2);
+  cropEndInput.value = (endMs / 1000).toFixed(2);
+  videoSolverSource.trace = clipTrace;
+  trace = clipTrace;
+  saveTrace(trace);
+  restoreTraceState();
+  drawVideoSourceFrameToPreview();
+  updateVideoSolverState(status);
+}
+
+async function autoCropVideoClip() {
+  if (!videoSolverSource.objectUrl) {
+    throw new Error("Import a source video first.");
+  }
+  video.pause();
+  videoSolveBuild = null;
+  videoSolverSource.preparedFrames = [];
+  latestVideoSolverFrame = null;
+
+  const durationMs = videoSolverSource.durationMs || Math.round((video.duration || 0) * 1000);
+  const fullEvents = await scanVideoHandTrace({
+    startMs: 0,
+    endMs: durationMs,
+    label: "Auto crop scan",
+  });
+  const analysis = analyzeVideoEvents(fullEvents);
+  reportClipAnalysis(analysis, { replace: true });
+  const candidate = pickAutoCropCandidate(analysis);
+  const cropEvents = fullEvents
+    .filter((event) => event.atMs >= candidate.startMs && event.atMs <= candidate.endMs)
+    .map((event) => ({
+      atMs: Math.round(event.atMs - candidate.startMs),
+      message: event.message,
+    }));
+
+  commitVideoClipTrace({
+    events: cropEvents,
+    startMs: candidate.startMs,
+    endMs: candidate.endMs,
+    status:
+      `Auto cropped ${(candidate.startMs / 1000).toFixed(2)}s-${(candidate.endMs / 1000).toFixed(2)}s. ` +
+      `Action starts at ${(candidate.actionAtMs / 1000).toFixed(2)}s; trigger follows after ${Math.round(candidate.triggerLagMs)}ms.`,
+  });
+}
+
+function pickAutoCropCandidate(analysis) {
+  if (!analysis.fullFlaps.length) {
+    throw new Error("No 67 gesture found in the source video.");
+  }
+  const reversible = analysis.candidates.filter((candidate) => candidate.reversible);
+  if (!reversible.length) {
+    const best = analysis.bestCandidate ?? analysis.candidates[0];
+    const detail = best
+      ? ` Best candidate ${(best.startMs / 1000).toFixed(2)}-${(best.endMs / 1000).toFixed(2)}s had forward/reverse flaps ${best.forwardFlapCount}/${best.reverseFlapCount}: ${best.error || "not clean"}.`
+      : "";
+    throw new Error(
+      `Auto crop found ${analysis.fullFlaps.length} flap(s), but none were reversible as a clean source unit.${detail}`,
+    );
+  }
+  return analysis.bestCandidate ?? reversible[0];
+}
+
+async function extractVideoClip() {
+  if (!videoSolverSource.objectUrl) {
+    throw new Error("Import a source video first.");
+  }
+  const { startMs, endMs } = readCropMs();
+  video.pause();
+  videoSolverSource.cropStartMs = startMs;
+  videoSolverSource.cropEndMs = endMs;
+  videoSolveBuild = null;
+  videoSolverSource.preparedFrames = [];
+  latestVideoSolverFrame = null;
+  const events = await scanVideoHandTrace({ startMs, endMs, label: "Extracting clip" });
+  const flaps = simulateGestureFlaps(events);
+  reportClipAnalysis(analyzeVideoEvents(events), { replace: true });
+  const flap = flaps[0];
+  const timing =
+    flaps.length === 1
+      ? ` Action starts at ${((startMs + (flap.auditAtMs ?? flap.triggerAtMs)) / 1000).toFixed(2)}s; trigger follows after ${Math.round(flap.triggerAtMs - (flap.auditAtMs ?? flap.triggerAtMs))}ms.`
+      : ` Detected ${flaps.length} gesture flaps; adjust crop before building.`;
+  commitVideoClipTrace({
+    events,
+    startMs,
+    endMs,
+    status:
+      `Extracted ${events.length} samples from ${(startMs / 1000).toFixed(2)}s-${(endMs / 1000).toFixed(2)}s.` +
+      `${timing} Build preview next.`,
+  });
+}
+
+function reportClipAnalysis(analysis, { replace = false } = {}) {
+  const candidateLines = analysis.candidates.length
+    ? analysis.candidates
+        .slice(0, 8)
+        .map((candidate) => {
+          const marker = analysis.bestCandidate === candidate ? "*" : "-";
+          const verdict = candidate.reversible
+            ? "reversible"
+            : `blocked: ${candidate.error || "not clean"}`;
+          return (
+            `${marker} ${(candidate.startMs / 1000).toFixed(2)}-${(candidate.endMs / 1000).toFixed(2)}s ` +
+            `action ${(candidate.actionAtMs / 1000).toFixed(2)}s trigger ${(candidate.triggerAtMs / 1000).toFixed(2)}s ` +
+            `lag ${Math.round(candidate.triggerLagMs)}ms ` +
+            `fwd/rev ${candidate.forwardFlapCount}/${candidate.reverseFlapCount} ${verdict}`
+          );
+        })
+    : ["- no 67 trigger candidates detected"];
+  const lines = [
+    "Clip analysis",
+    `Duration: ${(analysis.durationMs / 1000).toFixed(2)}s`,
+    `Hands: ${analysis.usableSamples}/${analysis.samples} usable (${Math.round(analysis.coverageRatio * 100)}%)`,
+    `Sample gap: avg ${formatMs(analysis.averageSampleGapMs)}, max ${formatMs(analysis.maxSampleGapMs)}`,
+    `Full-video flaps: ${analysis.fullFlaps.length}`,
+    `Full-video reversed flaps: ${analysis.reverseFullFlaps.length}`,
+    "Candidates (* selected):",
+    ...candidateLines,
+    "",
+    "Pattern note: one solver jump needs three alternating high poses, e.g. L-R-L or R-L-R, with brief level crossings between them.",
+  ];
+  appendSolveSuiteResult(lines.join("\n"), { replace });
+}
+
+function analyzeVideoEvents(events) {
+  return analyzeSourceGestureClip(events, {
+    preActionMs: AUTO_CROP_PRE_ACTION_MS,
+    postTriggerMs: AUTO_CROP_POST_TRIGGER_MS,
+  });
+}
+
+function formatMs(value) {
+  return Number.isFinite(value) ? `${Math.round(value)}ms` : "n/a";
+}
+
+function nextAnimationFrame() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function buildVideoSolverPreview() {
+  const clipTrace = videoSolverSource.trace || trace;
+  if (!clipTrace?.events?.length) {
+    throw new Error("Extract or import a cropped stable -> 67 -> stable trace first.");
+  }
+  if (!videoSolverSource.objectUrl) {
+    throw new Error("Import the matching source video before building preview frames.");
+  }
+
+  updateVideoSolverState("Building forward/back solver plan...");
+  videoSolveBuild = buildVideoSolvePlan({
+    clipTrace,
+    targetScore: targetWinScore(),
+    overshoot: 1,
+    strategy: "lookahead",
+    directionPattern: "pingpong",
+    unitSectionSpeedPattern: readUnitSectionSpeedPattern(),
+  });
+  trace = {
+    ...videoSolveBuild.trace,
+    videoSolve: videoSolveBuild.videoSolve,
+  };
+  saveTrace(trace);
+  restoreTraceState();
+  reportVideoSolveBuild(videoSolveBuild);
+  await prepareVideoSolveFrames(videoSolveBuild);
+  const firstFrame = videoSolverSource.preparedFrames[0];
+  if (firstFrame) {
+    drawPreparedVideoSolverFrame(firstFrame);
+  }
+  updateVideoSolverState(
+    `Preview ready: ${videoSolveBuild.videoSolve.frames.length} frames, replay score ${videoSolveBuild.replay.score}.`,
+  );
+}
+
+function reportVideoSolveBuild(built) {
+  appendSolveSuiteResult(
+    [
+      "Video solver preview",
+      `Replay score: ${built.replay.score}/${targetWinScore()}`,
+      `Gestures: ${built.videoSolve.windows.length} alternating forward/back`,
+      `Video replay: source-time pingpong, no horizontal mirror`,
+      `Source action: ${Number(built.source.auditAtMs ?? built.source.triggerAtMs).toFixed(0)}ms start, ${Number(built.source.triggerAtMs).toFixed(0)}ms trigger`,
+      `Unit speeds: ${formatUnitSpeeds(built.videoSolve.unitSectionSpeedPattern)}`,
+      `Video frames: ${built.videoSolve.frames.length}`,
+      `Duration: ${(built.videoSolve.totalDurationMs / 1000).toFixed(1)}s`,
+    ].join("\n"),
+    { replace: true },
+  );
+}
+
+function readUnitSectionSpeedPattern() {
+  return [
+    {
+      lead: readSpeedInput(leadSpeedInput),
+      gesture: readSpeedInput(gestureSpeedInput),
+      recovery: readSpeedInput(recoverySpeedInput),
+      settle: readSpeedInput(settleSpeedInput),
+    },
+  ];
+}
+
+function readSpeedInput(input) {
+  const value = Number(input?.value ?? 1);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("Unit section speeds must be positive numbers.");
+  }
+  return clamp(value, 0.2, 3);
+}
+
+function formatUnitSpeeds(pattern) {
+  const profile = Array.isArray(pattern) ? pattern[0] : pattern;
+  if (!profile) {
+    return "default";
+  }
+  return ["lead", "gesture", "recovery", "settle"]
+    .map((name) => `${name}=${Number(profile[name] ?? 1).toFixed(2)}`)
+    .join(", ");
+}
+
+async function prepareVideoSolveFrames(built) {
+  videoSolverSource.preparedFrames = [];
+  const frames = built.videoSolve.frames;
+  for (let index = 0; index < frames.length; index += 1) {
+    const frame = frames[index];
+    const image = await renderVideoSolverFrame(frame);
+    videoSolverSource.preparedFrames.push({
+      ...frame,
+      image,
+    });
+    if (index % 24 === 0) {
+      drawPreparedVideoSolverFrame(videoSolverSource.preparedFrames.at(-1));
+      updateVideoSolverState(`Rendering preview frames ${index + 1}/${frames.length}...`);
+      await nextAnimationFrame();
+    }
+  }
+}
+
+async function renderVideoSolverFrame(frame) {
+  const sourceMs = videoSolverSource.cropStartMs + frame.sourceAtMs;
+  await seekVideo(sourceMs / 1000);
+  const sourceWidth = video.videoWidth || VIDEO_SOLVER_PREVIEW_WIDTH;
+  const sourceHeight = video.videoHeight || Math.round((sourceWidth / 16) * 9);
+  const targetWidth = Math.min(VIDEO_SOLVER_PREVIEW_WIDTH, sourceWidth);
+  const targetHeight = Math.max(1, Math.round((sourceHeight / sourceWidth) * targetWidth));
+  videoSolveRenderCanvas.width = targetWidth;
+  videoSolveRenderCanvas.height = targetHeight;
+  videoSolveRenderCtx.drawImage(video, 0, 0, targetWidth, targetHeight);
+  stampVideoSolverFrame(videoSolveRenderCtx, frame.sequence, targetWidth, targetHeight);
+  return videoSolveRenderCanvas.toDataURL("image/jpeg", VIDEO_SOLVER_PREVIEW_QUALITY);
+}
+
+function stampVideoSolverFrame(ctx, sequence, width, height) {
+  let value = sequence >>> 0;
+  for (let index = 0; index < 12; index += 1) {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    const shade = value & 0xff;
+    ctx.fillStyle = `rgb(${shade},${(shade * 13) & 0xff},${(shade * 29) & 0xff})`;
+    ctx.fillRect(4 + index * 3, height - 8, 2, 2);
+  }
+}
+
+function drawVideoSourceFrameToPreview() {
+  if (!solverPreviewCtx || !video.videoWidth) {
+    return;
+  }
+  solverPreview.width = video.videoWidth;
+  solverPreview.height = video.videoHeight;
+  solverPreviewCtx.drawImage(video, 0, 0, solverPreview.width, solverPreview.height);
+}
+
+function drawPreparedVideoSolverFrame(frame) {
+  if (!solverPreviewCtx || !frame?.image) {
+    return;
+  }
+  const image = new Image();
+  image.onload = () => {
+    solverPreview.width = image.naturalWidth || VIDEO_SOLVER_PREVIEW_WIDTH;
+    solverPreview.height = image.naturalHeight || Math.round((VIDEO_SOLVER_PREVIEW_WIDTH / 16) * 9);
+    solverPreviewCtx.drawImage(image, 0, 0, solverPreview.width, solverPreview.height);
+  };
+  image.src = frame.image;
+  latestVideoSolverFrame = frame;
+}
+
+function drawSolverPreviewPlaceholder(text) {
+  if (!solverPreviewCtx) {
+    return;
+  }
+  solverPreview.width = VIDEO_SOLVER_PREVIEW_WIDTH;
+  solverPreview.height = Math.round((VIDEO_SOLVER_PREVIEW_WIDTH / 16) * 9);
+  solverPreviewCtx.fillStyle = "#1d2430";
+  solverPreviewCtx.fillRect(0, 0, solverPreview.width, solverPreview.height);
+  solverPreviewCtx.fillStyle = "#d7e1ef";
+  solverPreviewCtx.font = "700 18px Avenir Next, Segoe UI, sans-serif";
+  solverPreviewCtx.textAlign = "center";
+  solverPreviewCtx.fillText(text, solverPreview.width / 2, solverPreview.height / 2);
+}
+
+function updateVideoSolverState(text) {
+  if (videoSolverState) {
+    videoSolverState.textContent = text;
+  }
+  statusText.textContent = text;
+}
+
+function runVideoSolverPreview() {
+  if (!videoSolveBuild?.trace?.events?.length) {
+    throw new Error("Build the video solver preview first.");
+  }
+  if (!videoSolverSource.preparedFrames.length) {
+    throw new Error("Preview frames are not rendered yet.");
+  }
+
+  playTraceEvents(videoSolveBuild.trace.events, {
+    name: "Video solver forward/back",
+    claimScore: videoSolveBuild.trace.claimScore ?? targetWinScore(),
+    videoFrames: videoSolverSource.preparedFrames,
+  });
 }
 
 function prepareAtlasTransparency() {
@@ -2092,13 +2451,6 @@ stopScriptButton.addEventListener("click", () => {
   stopScript();
   statusText.textContent = "Script stopped.";
 });
-if (runSolveSuiteButton) {
-  runSolveSuiteButton.addEventListener("click", startSolveSuiteScript);
-}
-if (solveSuiteSelect) {
-  solveSuiteSelect.addEventListener("change", updateSolveSuiteDescription);
-  populateSolveSuiteSelect();
-}
 exportTraceButton.addEventListener("click", exportTrace);
 importTraceButton.addEventListener("click", () => importTraceInput.click());
 importTraceInput.addEventListener("change", async () => {
@@ -2115,6 +2467,68 @@ importTraceInput.addEventListener("change", async () => {
     importTraceInput.value = "";
   }
 });
+if (importVideoButton && videoSolverInput) {
+  importVideoButton.addEventListener("click", () => videoSolverInput.click());
+  videoSolverInput.addEventListener("change", async () => {
+    const [file] = videoSolverInput.files || [];
+    if (!file) {
+      return;
+    }
+    try {
+      await importVideoSource(file);
+    } catch (error) {
+      updateVideoSolverState(`Video import failed: ${error.message}`);
+    } finally {
+      videoSolverInput.value = "";
+    }
+  });
+}
+if (markCropStartButton) {
+  markCropStartButton.addEventListener("click", () => {
+    cropStartInput.value = (video.currentTime || 0).toFixed(2);
+  });
+}
+if (markCropEndButton) {
+  markCropEndButton.addEventListener("click", () => {
+    cropEndInput.value = (video.currentTime || 0).toFixed(2);
+  });
+}
+if (autoCropVideoButton) {
+  autoCropVideoButton.addEventListener("click", async () => {
+    try {
+      await autoCropVideoClip();
+    } catch (error) {
+      updateVideoSolverState(`Auto crop failed: ${error.message}`);
+    }
+  });
+}
+if (extractVideoClipButton) {
+  extractVideoClipButton.addEventListener("click", async () => {
+    try {
+      await extractVideoClip();
+    } catch (error) {
+      updateVideoSolverState(`Extract failed: ${error.message}`);
+    }
+  });
+}
+if (buildVideoSolverButton) {
+  buildVideoSolverButton.addEventListener("click", async () => {
+    try {
+      await buildVideoSolverPreview();
+    } catch (error) {
+      updateVideoSolverState(`Build failed: ${error.message}`);
+    }
+  });
+}
+if (runVideoSolverButton) {
+  runVideoSolverButton.addEventListener("click", () => {
+    try {
+      runVideoSolverPreview();
+    } catch (error) {
+      updateVideoSolverState(`Submit failed: ${error.message}`);
+    }
+  });
+}
 
 window.addEventListener("keydown", (event) => {
   if (event.code === "Space") {

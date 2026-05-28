@@ -6,6 +6,7 @@ import { extname, join, normalize, resolve } from "node:path";
 
 const ROOT = process.cwd();
 const SOLVE_FRONTEND_ROOT = resolve(ROOT, "solve/frontend");
+const SOLVE_MEDIA_ROOT = resolve(ROOT, "solve");
 const SHARED_ASSET_ROOT = resolve(ROOT, "frontend/public/assets");
 const SHARED_ROOT = resolve(ROOT, "shared");
 const FIXTURES_ROOT = resolve(ROOT, "scripts/fixtures");
@@ -24,6 +25,9 @@ const MIME_TYPES = new Map([
   [".png", "image/png"],
   [".jpg", "image/jpeg"],
   [".jpeg", "image/jpeg"],
+  [".mov", "video/quicktime"],
+  [".mp4", "video/mp4"],
+  [".webm", "video/webm"],
   [".ico", "image/x-icon"],
 ]);
 
@@ -60,21 +64,26 @@ const server = createServer(async (request, response) => {
   }
 
   if (url.pathname.startsWith("/shared-assets/")) {
-    await serveStaticFrom(SHARED_ASSET_ROOT, url.pathname.replace("/shared-assets", ""), response);
+    await serveStaticFrom(SHARED_ASSET_ROOT, url.pathname.replace("/shared-assets", ""), response, request);
     return;
   }
 
   if (url.pathname.startsWith("/shared/")) {
-    await serveStaticFrom(SHARED_ROOT, url.pathname.replace("/shared", ""), response);
+    await serveStaticFrom(SHARED_ROOT, url.pathname.replace("/shared", ""), response, request);
     return;
   }
 
   if (url.pathname.startsWith("/fixtures/")) {
-    await serveStaticFrom(FIXTURES_ROOT, url.pathname.replace("/fixtures", ""), response);
+    await serveStaticFrom(FIXTURES_ROOT, url.pathname.replace("/fixtures", ""), response, request);
     return;
   }
 
-  await serveStaticFrom(SOLVE_FRONTEND_ROOT, url.pathname, response);
+  if (url.pathname.startsWith("/media/")) {
+    await serveStaticFrom(SOLVE_MEDIA_ROOT, url.pathname.replace("/media", ""), response, request);
+    return;
+  }
+
+  await serveStaticFrom(SOLVE_FRONTEND_ROOT, url.pathname, response, request);
 });
 
 server.on("upgrade", (request, socket) => {
@@ -279,7 +288,7 @@ class RawWebSocketConnection {
   }
 }
 
-async function serveStaticFrom(root, pathname, response) {
+async function serveStaticFrom(root, pathname, response, request) {
   const requestedPath = pathname === "/" ? "/index.html" : decodeURIComponent(pathname);
   const normalized = normalize(requestedPath).replace(/^(\.\.(\/|\\|$))+/, "");
   const absolutePath = resolve(join(root, normalized));
@@ -296,14 +305,52 @@ async function serveStaticFrom(root, pathname, response) {
       return;
     }
 
+    const contentType = MIME_TYPES.get(extname(absolutePath)) || "application/octet-stream";
+    const range = parseRangeHeader(request?.headers?.range, fileStat.size);
+    if (range) {
+      response.writeHead(206, {
+        "content-type": contentType,
+        "cache-control": "no-store",
+        "accept-ranges": "bytes",
+        "content-range": `bytes ${range.start}-${range.end}/${fileStat.size}`,
+        "content-length": range.end - range.start + 1,
+      });
+      createReadStream(absolutePath, range).pipe(response);
+      return;
+    }
+
     response.writeHead(200, {
-      "content-type": MIME_TYPES.get(extname(absolutePath)) || "application/octet-stream",
+      "content-type": contentType,
       "cache-control": "no-store",
+      "accept-ranges": "bytes",
+      "content-length": fileStat.size,
     });
     createReadStream(absolutePath).pipe(response);
   } catch {
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not found");
   }
+}
+
+function parseRangeHeader(rawRange, fileSize) {
+  if (!rawRange || !rawRange.startsWith("bytes=")) {
+    return null;
+  }
+  const [rawStart, rawEnd] = rawRange.slice("bytes=".length).split("-");
+  const start = Number(rawStart);
+  const end = rawEnd ? Number(rawEnd) : fileSize - 1;
+  if (
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    start < 0 ||
+    end < start ||
+    start >= fileSize
+  ) {
+    return null;
+  }
+  return {
+    start,
+    end: Math.min(end, fileSize - 1),
+  };
 }
 
 function acceptWebSocket(request, socket) {

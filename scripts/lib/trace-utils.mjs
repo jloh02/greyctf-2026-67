@@ -173,6 +173,11 @@ export function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (token === "--unit-speeds") {
+      flags.unitSpeeds = argv[index + 1];
+      index += 1;
+      continue;
+    }
     if (token === "--output" || token === "-o") {
       flags.output = argv[index + 1];
       index += 1;

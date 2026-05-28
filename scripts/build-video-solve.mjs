@@ -21,6 +21,9 @@ function main() {
   const targetScore = Number(process.env.SOLVE_TARGET_SCORE || WIN_SCORE);
   const overshoot = Number(process.env.SOLVE_OVERSHOOT ?? "1");
   const strategy = flags.strategy || process.env.SOLVE_STRATEGY || "lookahead";
+  const unitSectionSpeedPattern = parseUnitSpeeds(
+    flags.unitSpeeds || process.env.SOLVE_UNIT_SPEEDS || "",
+  );
 
   const clipTrace = loadTrace(input);
   const built = buildVideoSolvePlan({
@@ -29,6 +32,7 @@ function main() {
     overshoot,
     strategy,
     directionPattern: flags.direction || "pingpong",
+    ...(unitSectionSpeedPattern ? { unitSectionSpeedPattern } : {}),
   });
   const trace = {
     ...built.trace,
@@ -44,6 +48,7 @@ function main() {
   );
   console.log(
     `Source clip: duration=${built.source.durationMs.toFixed(1)}ms ` +
+      `action=${(built.source.auditAtMs ?? built.source.triggerAtMs).toFixed(1)}ms ` +
       `trigger=${built.source.triggerAtMs.toFixed(1)}ms ` +
       `gestures=${built.videoSolve.windows.length}`,
   );
@@ -52,6 +57,24 @@ function main() {
     console.error("Video solve replay score below claim target; adjust crop, strategy, or speed pattern.");
     process.exitCode = 1;
   }
+}
+
+function parseUnitSpeeds(raw) {
+  if (!raw) {
+    return null;
+  }
+  return raw.split(";").map((profileText) => {
+    const profile = {};
+    for (const pair of profileText.split(",")) {
+      const [key, value] = pair.split("=");
+      const name = key?.trim();
+      if (!name) {
+        continue;
+      }
+      profile[name] = Number(value);
+    }
+    return profile;
+  });
 }
 
 main();

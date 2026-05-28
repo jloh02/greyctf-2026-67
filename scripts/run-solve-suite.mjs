@@ -1,18 +1,15 @@
 #!/usr/bin/env node
 /**
- * Run tiered solve modes locally and optionally against the backend.
+ * Build the supported video-backed solver trace locally.
  *
  *   node scripts/run-solve-suite.mjs
- *   node scripts/run-solve-suite.mjs --mode mechanical-greedy
- *   node scripts/run-solve-suite.mjs --verify --trace scripts/fixtures/solve-pack.json
+ *   node scripts/run-solve-suite.mjs --trace scripts/fixtures/loop.json
  */
 import { WIN_SCORE } from "../shared/game-core.js";
-import { replayScoreFromFlapEvents } from "../shared/flap-solver.js";
 import {
   SOLVE_MODES,
   buildSuiteTrace,
   listSolveModesByTier,
-  summarizeSuiteResult,
 } from "../shared/solve-suite.js";
 import { loadTrace } from "./lib/trace-utils.mjs";
 
@@ -25,13 +22,13 @@ const selectedMode =
 const tracePath =
   traceFlag >= 0
     ? argv[traceFlag + 1]
-    : process.env.SOLVE_SUITE_TRACE || "scripts/fixtures/solve-pack.json";
+    : process.env.SOLVE_SUITE_TRACE || "scripts/fixtures/loop.json";
 
 const targetUrl = process.env.TARGET_WS_URL || "ws://127.0.0.1:8787/ws";
 const claimScore = Number(process.env.SIMULATE_CLAIMED_SCORE || WIN_SCORE);
 
 function printHeader() {
-  console.log("Solve suite — tiered methods\n");
+  console.log("Solve suite — video-backed solver\n");
   for (const group of listSolveModesByTier()) {
     console.log(`Tier ${group.tier}: ${group.title}`);
     console.log(`  ${group.description}`);
@@ -142,8 +139,7 @@ async function runMode(modeId, trace) {
     };
   }
 
-  const replayScore =
-    built.replayScore ?? replayScoreFromFlapEvents(built.events || []);
+  const replayScore = built.replayScore ?? built.score;
   const row = {
     mode: modeId,
     tier: built.mode.tier,
@@ -178,7 +174,7 @@ async function main() {
     trace = loadTrace(tracePath);
     console.log(`Loaded trace: ${tracePath} (${trace.events.length} events)\n`);
   } catch {
-    console.log(`No trace at ${tracePath} — replay modes will skip.\n`);
+    console.log(`No trace at ${tracePath} — solver will skip.\n`);
   }
 
   const modes = selectedMode
