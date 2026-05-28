@@ -44,11 +44,11 @@ clips keep their own timing instead of borrowing the forward frame order.
 
 ## CLI Build
 
-For a fast local sanity check without a source video:
+For a fast local sanity check with an exported cropped trace:
 
 ```sh
-pnpm solve:build-video
-# -> scripts/fixtures/video-solve-pack.json
+pnpm solve:build-video -- path/to/cropped-trace.json
+# -> video-solve-pack.json
 ```
 
 This emits a hand trace plus `videoSolve.frames` timing metadata. The browser UI
@@ -58,7 +58,7 @@ file to render actual frame images.
 ## Suite
 
 ```sh
-pnpm solve:suite
+pnpm solve:suite -- --trace path/to/cropped-trace.json
 ```
 
 The suite contains one mode: `recorded-video-pingpong`. The old empty-claim,

@@ -9,7 +9,6 @@ const SOLVE_FRONTEND_ROOT = resolve(ROOT, "solve/frontend");
 const SOLVE_MEDIA_ROOT = resolve(ROOT, "solve");
 const SHARED_ASSET_ROOT = resolve(ROOT, "frontend/public/assets");
 const SHARED_ROOT = resolve(ROOT, "shared");
-const FIXTURES_ROOT = resolve(ROOT, "scripts/fixtures");
 const PORT = Number(process.env.SOLVE_PORT || process.env.PORT || "4180");
 const HOST = process.env.SOLVE_HOST || process.env.HOST || "127.0.0.1";
 const DEFAULT_TARGET_WS_URL = normalizeTargetUrl(
@@ -70,11 +69,6 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname.startsWith("/shared/")) {
     await serveStaticFrom(SHARED_ROOT, url.pathname.replace("/shared", ""), response, request);
-    return;
-  }
-
-  if (url.pathname.startsWith("/fixtures/")) {
-    await serveStaticFrom(FIXTURES_ROOT, url.pathname.replace("/fixtures", ""), response, request);
     return;
   }
 

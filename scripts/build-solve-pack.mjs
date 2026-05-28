@@ -20,7 +20,7 @@ import {
 
 function main() {
   const { flags } = parseArgs(process.argv.slice(2));
-  const output = flags.output || "scripts/fixtures/solve-pack.json";
+  const output = flags.output || "solve-pack.json";
   const targetScore = Number(process.env.SOLVE_TARGET_SCORE || WIN_SCORE);
   const overshoot = Number(process.env.SOLVE_OVERSHOOT ?? "0");
   const motion = flags.motion || process.env.SOLVE_MOTION || "camouflage";

@@ -3,7 +3,7 @@
  * Build the supported video-backed solver trace locally.
  *
  *   node scripts/run-solve-suite.mjs
- *   node scripts/run-solve-suite.mjs --trace scripts/fixtures/loop.json
+ *   node scripts/run-solve-suite.mjs --trace path/to/cropped-trace.json
  */
 import { WIN_SCORE } from "../shared/game-core.js";
 import {
@@ -22,7 +22,7 @@ const selectedMode =
 const tracePath =
   traceFlag >= 0
     ? argv[traceFlag + 1]
-    : process.env.SOLVE_SUITE_TRACE || "scripts/fixtures/loop.json";
+    : process.env.SOLVE_SUITE_TRACE || null;
 
 const targetUrl = process.env.TARGET_WS_URL || "ws://127.0.0.1:8787/ws";
 const claimScore = Number(process.env.SIMULATE_CLAIMED_SCORE || WIN_SCORE);
@@ -165,11 +165,15 @@ async function main() {
   printHeader();
 
   let trace = null;
-  try {
-    trace = loadTrace(tracePath);
-    console.log(`Loaded trace: ${tracePath} (${trace.events.length} events)\n`);
-  } catch {
-    console.log(`No trace at ${tracePath} — solver will skip.\n`);
+  if (tracePath) {
+    try {
+      trace = loadTrace(tracePath);
+      console.log(`Loaded trace: ${tracePath} (${trace.events.length} events)\n`);
+    } catch {
+      console.log(`No trace at ${tracePath} — solver will skip.\n`);
+    }
+  } else {
+    console.log("No trace provided — pass --trace <cropped-trace.json> to run the solver.\n");
   }
 
   const modes = selectedMode
