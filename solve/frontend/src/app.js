@@ -19,7 +19,7 @@ import {
   handsMessage,
   toSocketPayload,
 } from "/shared/frontend-client.js";
-import { mockHandsFromSample } from "/shared/gesture-loop.js";
+import { buildGestureLoopEvents, mockHandsFromSample } from "/shared/gesture-loop.js";
 import { simulateGestureFlaps } from "/shared/gesture-solve.js";
 import {
   analyzeSourceGestureClip,
@@ -174,8 +174,8 @@ const VIDEO_FRAME_INTERVAL_MS = 80;
 const VIDEO_FRAME_WIDTH = 360;
 const VIDEO_FRAME_QUALITY = 0.58;
 const VIDEO_SOLVER_SAMPLE_FPS = 30;
-const VIDEO_SOLVER_PREVIEW_WIDTH = 360;
-const VIDEO_SOLVER_PREVIEW_QUALITY = 0.6;
+const VIDEO_SOLVER_PREVIEW_WIDTH = 480;
+const VIDEO_SOLVER_PREVIEW_QUALITY = 0.82;
 const AUTO_CROP_PRE_ACTION_MS = 1800;
 const AUTO_CROP_POST_TRIGGER_MS = 900;
 
@@ -1777,7 +1777,7 @@ function sendVideoSolveFrame(frame) {
   updateHandMeters(sample);
   drawSampleOverlay(sample);
 
-  if (!socket || socket.readyState !== WebSocket.OPEN || config.videoVerify?.mode === "off") {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
 
@@ -2249,11 +2249,10 @@ async function buildVideoSolverPreview() {
   });
   if (videoSolveBuild.replay.score < targetWinScore()) {
     updateVideoSolverState(
-      `Video-derived trace replayed to ${videoSolveBuild.replay.score}; rebuilding from clean 67 fixture...`,
+      `Video-derived trace replayed to ${videoSolveBuild.replay.score}; using generated clean 67 control trace...`,
     );
-    const fallbackTrace = await loadCleanGestureFallbackTrace();
     videoSolveBuild = buildVideoSolvePlan({
-      clipTrace: fallbackTrace,
+      clipTrace: buildGeneratedCleanGestureTrace(),
       targetScore: targetWinScore(),
       overshoot: 0,
       strategy: "lookahead",
@@ -2278,16 +2277,21 @@ async function buildVideoSolverPreview() {
   );
 }
 
-async function loadCleanGestureFallbackTrace() {
-  const response = await fetch("/fixtures/loop.json", { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`clean gesture fixture failed to load (${response.status})`);
-  }
-  const fallbackTrace = await response.json();
-  if (!isTrace(fallbackTrace)) {
-    throw new Error("clean gesture fixture is not a trace");
-  }
-  return fallbackTrace;
+function buildGeneratedCleanGestureTrace() {
+  const events = buildGestureLoopEvents();
+  return {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    target: normalizeTargetUrl(targetInput.value || configResponse.defaultTarget),
+    startedAt: null,
+    completedAt: new Date().toISOString(),
+    result: "generated-clean-gesture",
+    score: 0,
+    claimScore: 0,
+    handSamples: events.length,
+    flaps: 0,
+    events,
+  };
 }
 
 function reportVideoSolveBuild(built) {

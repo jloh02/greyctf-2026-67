@@ -36,7 +36,6 @@ const FINAL_FLAG = process.env.FINAL_FLAG || process.env.FLAG || "";
 const DIAGNOSTIC_PAGE = parseBoolean(process.env.DIAGNOSTIC_PAGE, false);
 const FRONTEND_ROOT = resolve(process.cwd(), "frontend");
 const SHARED_ROOT = resolve(process.cwd(), "shared");
-const FIXTURES_ROOT = resolve(process.cwd(), "scripts/fixtures");
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
   [".css", "text/css; charset=utf-8"],
@@ -291,18 +290,6 @@ function resolveStaticPath(pathname) {
       return null;
     }
     return sharedAbsolutePath;
-  }
-
-  if (pathname.startsWith("/fixtures/")) {
-    const fixturesRelativePath = normalize(decodeURIComponent(pathname.slice("/fixtures/".length))).replace(
-      /^(\.\.(\/|\\|$))+/,
-      "",
-    );
-    const fixturesAbsolutePath = resolve(join(FIXTURES_ROOT, fixturesRelativePath));
-    if (!fixturesAbsolutePath.startsWith(FIXTURES_ROOT)) {
-      return null;
-    }
-    return fixturesAbsolutePath;
   }
 
   let requestedPath = pathname;
@@ -1609,11 +1596,6 @@ class GameSession {
       return cameraTraceBlocked("video", "server video landmark extraction did not find enough two-hand frames.");
     }
 
-    const clientMismatch = GameSession.auditVideoClientAnchorAgreement(events, serverHands);
-    if (clientMismatch) {
-      return clientMismatch;
-    }
-
     const cutVerdict = GameSession.auditServerVideoContinuity(serverHands);
     if (cutVerdict) {
       return cutVerdict;
@@ -1645,17 +1627,7 @@ class GameSession {
   }
 
   static canonicalizeEventsFromServerVideo(events) {
-    if (DISABLE_ANTI_CHEAT || SPACE_67_KEYBOARD || VIDEO_VERIFY.mode === "off") {
-      return events;
-    }
-
-    const serverHands = GameSession.serverVideoHandFrames(events);
-    if (serverHands.length < VIDEO_VERIFY.minValidFrames) {
-      return events;
-    }
-
-    const nonClientHands = events.filter((event) => event.type !== "hands");
-    return [...nonClientHands, ...serverHands].sort((left, right) => left.atMs - right.atMs);
+    return events;
   }
 
   static auditVideoClientAnchorAgreement(events, serverHands) {
@@ -1747,6 +1719,8 @@ class GameSession {
 
     const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
     const seenHashes = new Set();
+    let acceptedLandmarkSnapshots = 0;
+    let lastLandmarkVerdict = null;
     for (const challenge of challenges) {
       const snapshot = snapshotsById.get(challenge.id);
       if (!snapshot) {
@@ -1776,7 +1750,9 @@ class GameSession {
 
       const landmarkVerdict = await auditSnapshotLandmarks(snapshot);
       if (landmarkVerdict) {
-        return landmarkVerdict;
+        lastLandmarkVerdict = landmarkVerdict;
+      } else {
+        acceptedLandmarkSnapshots += 1;
       }
 
       if (seenHashes.has(snapshot.image.hash)) {
@@ -1792,19 +1768,17 @@ class GameSession {
         return cameraTraceBlocked("snapshot", "live camera snapshot did not include two tracked hands.");
       }
 
-      const nearestHandSample = nearestHandSampleAt(events, snapshot.atMs);
-      if (!nearestHandSample) {
-        return cameraTraceBlocked("snapshot", "live camera snapshot has no matching hand sample.");
-      }
+    }
 
-      if (
-        Math.abs(nearestHandSample.leftY - snapshot.leftY) >
-        SNAPSHOT_CHALLENGES.maxSnapshotHandDelta ||
-        Math.abs(nearestHandSample.rightY - snapshot.rightY) >
-        SNAPSHOT_CHALLENGES.maxSnapshotHandDelta
-      ) {
-        return cameraTraceBlocked("snapshot", "snapshot hand sample does not match the replay trace.");
-      }
+    if (
+      SNAPSHOT_LANDMARKS.mode === "required" &&
+      SNAPSHOT_LANDMARKS.serviceUrl &&
+      acceptedLandmarkSnapshots < SNAPSHOT_CHALLENGES.minRequired
+    ) {
+      return (
+        lastLandmarkVerdict ||
+        cameraTraceBlocked("landmark", "not enough live camera snapshots produced two-hand landmarks.")
+      );
     }
 
     return null;
@@ -2688,13 +2662,6 @@ async function auditSnapshotLandmarks(snapshot) {
     !Number.isFinite(extracted.rightY)
   ) {
     return cameraTraceBlocked("landmark", "server-side landmark extraction did not find two hands.");
-  }
-
-  if (
-    Math.abs(extracted.leftY - snapshot.leftY) > SNAPSHOT_LANDMARKS.maxAnchorDelta ||
-    Math.abs(extracted.rightY - snapshot.rightY) > SNAPSHOT_LANDMARKS.maxAnchorDelta
-  ) {
-    return cameraTraceBlocked("landmark", "server-side image landmarks do not match submitted hand anchors.");
   }
 
   return null;

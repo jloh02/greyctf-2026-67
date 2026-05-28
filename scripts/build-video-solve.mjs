@@ -3,7 +3,7 @@
  * Build a hand-only video solve plan from a cropped stable -> 67 -> stable trace.
  *
  * Usage:
- *   node scripts/build-video-solve.mjs scripts/fixtures/video-clip.json -o scripts/fixtures/video-solve-pack.json
+ *   node scripts/build-video-solve.mjs path/to/video-clip.json -o video-solve-pack.json
  */
 import { WIN_SCORE } from "../shared/game-core.js";
 import { buildVideoSolvePlan } from "../shared/video-solve.js";
@@ -16,8 +16,11 @@ import {
 
 function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2));
-  const input = positional[0] || flags.tile || "scripts/fixtures/loop.json";
-  const output = flags.output || "scripts/fixtures/video-solve-pack.json";
+  const input = positional[0] || flags.tile;
+  if (!input) {
+    throw new Error("Usage: node scripts/build-video-solve.mjs <cropped-trace.json> [-o video-solve-pack.json]");
+  }
+  const output = flags.output || "video-solve-pack.json";
   const targetScore = Number(process.env.SOLVE_TARGET_SCORE || WIN_SCORE);
   const overshoot = Number(process.env.SOLVE_OVERSHOOT ?? "0");
   const strategy = flags.strategy || process.env.SOLVE_STRATEGY || "lookahead";

@@ -3,14 +3,14 @@
  * Write a stable -> 67 -> stable gesture loop for solve-pack generation.
  *
  * Usage:
- *   node scripts/record-loop.mjs [-o scripts/fixtures/loop.json]
+ *   node scripts/record-loop.mjs [-o loop.json]
  */
 import { buildGestureLoopEvents } from "../shared/gesture-loop.js";
 import { buildTraceDocument, parseArgs, summarizeTrace, writeTrace } from "./lib/trace-utils.mjs";
 
 function main() {
   const { flags } = parseArgs(process.argv.slice(2));
-  const output = flags.output || "scripts/fixtures/loop.json";
+  const output = flags.output || "loop.json";
   const events = buildGestureLoopEvents(flags.loopMs);
 
   const trace = buildTraceDocument(events, { result: "loop", score: 0 });
