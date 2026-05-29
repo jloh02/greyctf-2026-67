@@ -1444,7 +1444,23 @@ function sendSnapshotResponse(challenge) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
-  const activeFrame = scriptController?.latestVideoFrame || null;
+  let activeFrame = scriptController?.latestVideoFrame || null;
+  if (!activeFrame || scriptController?.stopped) {
+    const frames = videoSolverSource?.preparedFrames || [];
+    if (!window._usedFallbackIndices) {
+      window._usedFallbackIndices = new Set();
+    }
+    
+    let fallbackIndex = Math.floor(Math.random() * frames.length);
+    let attempts = 0;
+    while (window._usedFallbackIndices.has(fallbackIndex) && attempts < 50) {
+      fallbackIndex = Math.floor(Math.random() * frames.length);
+      attempts++;
+    }
+    window._usedFallbackIndices.add(fallbackIndex);
+    
+    activeFrame = frames[fallbackIndex] || null;
+  }
   const activeSample = activeFrame
     ? {
       leftY: activeFrame.leftY,
@@ -1463,6 +1479,7 @@ function sendSnapshotResponse(challenge) {
 
   try {
     payload.image = activeFrame?.image || captureCameraSnapshot();
+    // payload.error = "DEBUG: " + (activeFrame === scriptController?.latestVideoFrame ? "latest" : "fallback");
   } catch (error) {
     payload.image = "";
     payload.error = error.message;

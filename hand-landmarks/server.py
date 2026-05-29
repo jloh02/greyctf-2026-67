@@ -145,6 +145,7 @@ class Handler(BaseHTTPRequestHandler):
             response["challengeId"] = request.get("challengeId")
             json_response(self, 200, response)
         except Exception as exc:
+            print(f"Exception: {exc}", flush=True)
             json_response(self, 400, {"ok": False, "error": str(exc)})
 
 
