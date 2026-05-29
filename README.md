@@ -13,6 +13,8 @@ Read the Whale section below if the challenge needs per-team/per-user instances.
 
 Can you 67 on a merry christmas?
 
+https://six-seven-676767.chal.zip
+
 # Author
 jloh02
 
