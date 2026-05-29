@@ -877,6 +877,7 @@ class GameSocket {
         entry.landmarkMessage = error?.message || "server video landmark extraction failed.";
       })
       .finally(() => {
+        delete entry.image.dataUrl;
         this.pendingVideoFrameTasks.delete(task);
       });
     this.pendingVideoFrameTasks.add(task);
@@ -2881,51 +2882,81 @@ async function auditSnapshotLandmarks(snapshot) {
   return null;
 }
 
+class Semaphore {
+  constructor(max) {
+    this.max = max;
+    this.active = 0;
+    this.waiting = [];
+  }
+  async acquire() {
+    if (this.active < this.max) {
+      this.active++;
+      return;
+    }
+    return new Promise((resolve) => this.waiting.push(resolve));
+  }
+  release() {
+    if (this.waiting.length > 0) {
+      const resolve = this.waiting.shift();
+      resolve();
+    } else {
+      this.active--;
+    }
+  }
+}
+
+const landmarkSemaphore = new Semaphore(8);
+
 async function extractSnapshotLandmarks(snapshot) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), SNAPSHOT_LANDMARKS.timeoutMs);
+  await landmarkSemaphore.acquire();
   try {
-    const response = await fetch(SNAPSHOT_LANDMARKS.serviceUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        challengeId: snapshot.id,
-        image: snapshot.image.dataUrl,
-        width: snapshot.image.width,
-        height: snapshot.image.height,
-      }),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SNAPSHOT_LANDMARKS.timeoutMs);
+    try {
+      const response = await fetch(SNAPSHOT_LANDMARKS.serviceUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          challengeId: snapshot.id,
+          image: snapshot.image.dataUrl,
+          width: snapshot.image.width,
+          height: snapshot.image.height,
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return {
+          ok: false,
+          message: `server-side landmark extractor returned HTTP ${response.status}.`,
+        };
+      }
+
+      const payload = await response.json();
+      const normalized = normalizeExtractedLandmarks(payload);
+      if (!normalized) {
+        return {
+          ok: false,
+          message: "server-side landmark extractor returned no usable hand anchors.",
+        };
+      }
+
+      return {
+        ok: true,
+        ...normalized,
+      };
+    } catch (error) {
       return {
         ok: false,
-        message: `server-side landmark extractor returned HTTP ${response.status}.`,
+        message:
+          error.name === "AbortError"
+            ? "server-side landmark extractor timed out."
+            : "server-side landmark extractor failed.",
       };
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const payload = await response.json();
-    const normalized = normalizeExtractedLandmarks(payload);
-    if (!normalized) {
-      return {
-        ok: false,
-        message: "server-side landmark extractor returned no usable hand anchors.",
-      };
-    }
-
-    return {
-      ok: true,
-      ...normalized,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      message:
-        error.name === "AbortError"
-          ? "server-side landmark extractor timed out."
-          : "server-side landmark extractor failed.",
-    };
   } finally {
-    clearTimeout(timeout);
+    landmarkSemaphore.release();
   }
 }
 
