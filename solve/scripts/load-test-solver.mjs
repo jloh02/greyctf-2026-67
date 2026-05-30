@@ -14,6 +14,7 @@ import { dirname, resolve } from "node:path";
 import { WIN_SCORE } from "../../shared/game-core.js";
 import { SOLVE_MODES } from "../lib/solve-suite.js";
 import { mergeTypeMetrics } from "./lib/load-test-metrics.mjs";
+import { LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS } from "./lib/load-test-client.mjs";
 import { isSolveSuiteMode, previewLoadTestPlan } from "./lib/load-test-plan.mjs";
 import { buildLoadTestReport, writeLoadTestReport } from "./lib/load-test-report.mjs";
 import { resolveLoadTestTarget } from "./lib/target-url.mjs";
@@ -112,7 +113,7 @@ ${SOLVE_MODES.map((entry) => `  - ${entry.id}: needs trace, full solve plan`).jo
 
 Passing --trace without --mode runs the supported full solve mode.
 
-  Env: TARGET_WS_URL, SOLVE_SUITE_TRACE, LOAD_TEST_DURATION_MS
+  Env: TARGET_WS_URL, SOLVE_SUITE_TRACE, LOAD_TEST_DURATION_MS, LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS (default 120000)
 
 Server examples:
   --url ws://127.0.0.1:8787/ws
@@ -180,9 +181,12 @@ function spawnWorker(clientId, config) {
       Number.isFinite(config.durationMs) && config.durationMs > 0
         ? config.durationMs
         : 8000;
+    const workerGraceMs = config.submitFinish
+      ? LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS + 10000
+      : 20000;
     timeout = setTimeout(() => {
       finish({ clientId, error: "worker timeout" });
-    }, timeoutBaseMs + 20000);
+    }, timeoutBaseMs + workerGraceMs);
   });
 }
 

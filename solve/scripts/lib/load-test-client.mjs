@@ -11,6 +11,9 @@ import {
 import { summarizeSamples } from "./load-test-metrics.mjs";
 
 const PING_INTERVAL_MS = 500;
+export const LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS = Number(
+  process.env.LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS || "120000",
+);
 
 function createTypeBuckets() {
   return new Map();
@@ -342,7 +345,7 @@ export async function replayEventsWithMetrics(options) {
             timeout: true,
             message: "finish verification timeout",
           }),
-        6000,
+        LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS,
       );
       const onMessage = (event) => {
         const message = JSON.parse(String(event.data));

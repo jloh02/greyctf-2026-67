@@ -581,6 +581,7 @@ class GameSocket {
     this.pendingSnapshotChallenges = new Map();
     this.nextSnapshotChallengeAt = Infinity;
     this.runHasHandSamples = false;
+    this.finishReceived = false;
     this.videoFrameSeq = 0;
     this.pendingVideoFrameTasks = new Set();
 
@@ -762,12 +763,16 @@ class GameSocket {
     this.pendingSnapshotChallenges = new Map();
     this.nextSnapshotChallengeAt = Infinity;
     this.runHasHandSamples = false;
+    this.finishReceived = false;
     this.videoFrameSeq = 0;
     this.pendingVideoFrameTasks = new Set();
   }
 
   /** Append a replayable input event while CLIENT_SIM is active. */
   recordRunEvent(message) {
+    if (this.finishReceived) {
+      return;
+    }
     const receivedAtMs = performance.now() - this.runStartPerf;
     const atMs = Number.isFinite(message.traceAtMs)
       ? clamp(message.traceAtMs, 0, 600000)
@@ -789,6 +794,9 @@ class GameSocket {
   }
 
   recordSnapshotResponse(message) {
+    if (this.finishReceived) {
+      return;
+    }
     const receivedAtMs = performance.now() - this.runStartPerf;
     const atMs = Number.isFinite(message.traceAtMs)
       ? clamp(message.traceAtMs, 0, 600000)
@@ -826,6 +834,9 @@ class GameSocket {
   }
 
   recordVideoFrame(message) {
+    if (this.finishReceived) {
+      return;
+    }
     const receivedAtMs = performance.now() - this.runStartPerf;
     const atMs = Number.isFinite(message.traceAtMs)
       ? clamp(message.traceAtMs, 0, VIDEO_VERIFY.maxFrameMs)
@@ -890,11 +901,17 @@ class GameSocket {
     await Promise.allSettled([...this.pendingVideoFrameTasks]);
   }
 
+  stopSnapshotChallenges() {
+    this.pendingSnapshotChallenges.clear();
+    this.nextSnapshotChallengeAt = Infinity;
+  }
+
   maybeIssueSnapshotChallenge(now = performance.now()) {
     if (
       !SNAPSHOT_CHALLENGES.enabled ||
       !this.clientSim ||
       !this.runHasHandSamples ||
+      this.finishReceived ||
       this.closed
     ) {
       return;
@@ -946,6 +963,9 @@ class GameSocket {
 
   /** Replay the session log when claimed score exceeds VERIFY_SCORE_THRESHOLD. */
   async handleFinish(message) {
+    this.finishReceived = true;
+    this.stopSnapshotChallenges();
+
     const claimedScore = clampInteger(message.score, 0, WIN_SCORE);
     if (claimedScore <= VERIFY_SCORE_THRESHOLD) {
       this.send({
