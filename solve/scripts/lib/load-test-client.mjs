@@ -11,9 +11,18 @@ import {
 import { summarizeSamples } from "./load-test-metrics.mjs";
 
 const PING_INTERVAL_MS = 500;
-export const LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS = Number(
-  process.env.LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS || "120000",
-);
+
+function readFinishVerifyTimeoutMs() {
+  const raw = process.env.LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** Null means wait indefinitely for `verified`. Set LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS to cap wait. */
+export const LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS = readFinishVerifyTimeoutMs();
 
 function createTypeBuckets() {
   return new Map();
@@ -329,8 +338,12 @@ export async function replayEventsWithMetrics(options) {
   if (submitFinish) {
     const finishSentAt = performance.now();
     finish = await new Promise((resolve) => {
+      let deadline = null;
       const cleanup = () => {
-        clearTimeout(deadline);
+        if (deadline !== null) {
+          clearTimeout(deadline);
+          deadline = null;
+        }
         socket.removeEventListener("message", onMessage);
         socket.removeEventListener("close", onClose);
         socket.removeEventListener("error", onError);
@@ -339,14 +352,16 @@ export async function replayEventsWithMetrics(options) {
         cleanup();
         resolve(value);
       };
-      const deadline = setTimeout(
-        () =>
-          resolveOnce({
-            timeout: true,
-            message: "finish verification timeout",
-          }),
-        LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS,
-      );
+      if (LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS !== null) {
+        deadline = setTimeout(
+          () =>
+            resolveOnce({
+              timeout: true,
+              message: "finish verification timeout",
+            }),
+          LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS,
+        );
+      }
       const onMessage = (event) => {
         const message = JSON.parse(String(event.data));
         if (message.type === "verified") {

@@ -113,7 +113,7 @@ ${SOLVE_MODES.map((entry) => `  - ${entry.id}: needs trace, full solve plan`).jo
 
 Passing --trace without --mode runs the supported full solve mode.
 
-  Env: TARGET_WS_URL, SOLVE_SUITE_TRACE, LOAD_TEST_DURATION_MS, LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS (default 120000)
+  Env: TARGET_WS_URL, SOLVE_SUITE_TRACE, LOAD_TEST_DURATION_MS, LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS (optional)
 
 Server examples:
   --url ws://127.0.0.1:8787/ws
@@ -182,11 +182,15 @@ function spawnWorker(clientId, config) {
         ? config.durationMs
         : 8000;
     const workerGraceMs = config.submitFinish
-      ? LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS + 10000
+      ? LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS === null
+        ? null
+        : LOAD_TEST_FINISH_VERIFY_TIMEOUT_MS + 10000
       : 20000;
-    timeout = setTimeout(() => {
-      finish({ clientId, error: "worker timeout" });
-    }, timeoutBaseMs + workerGraceMs);
+    if (workerGraceMs !== null) {
+      timeout = setTimeout(() => {
+        finish({ clientId, error: "worker timeout" });
+      }, timeoutBaseMs + workerGraceMs);
+    }
   });
 }
 
